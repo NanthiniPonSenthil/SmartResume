@@ -1,0 +1,39 @@
+{
+  "Data_Analyst_Resume.pdf": {
+    "name": "John Doe",
+    "email": null,
+    "phone": null,
+    "skills": [
+      "python",
+      "sql",
+      "excel",
+      "power bi",
+      "aws",
+      "azure",
+      "machine learning"
+    ],
+    "experience": [
+      "- Business Reporting & KPI Tracking\nProfessional Experience\nData Analyst | ABC Technologies, New York, NY (Jan 2021 – Present)",
+      "Education\nProjects",
+      "Projects\nimproving accuracy by 20%."
+    ],
+    "education": [
+      "Master of Science in Data Analytics – University of California, Berkeley (2014 – 2016)",
+      "Bachelor of Science in Computer Science – Boston University (2010 – 2014)"
+    ],
+    "technologies": [
+      "python",
+      "sql",
+      "mysql",
+      "postgresql",
+      "aws",
+      "azure",
+      "power bi",
+      "tableau",
+      "pandas",
+      "numpy",
+      "scikit-learn"
+    ],
+    "overall_experience_years": 5.0
+  }
+}
