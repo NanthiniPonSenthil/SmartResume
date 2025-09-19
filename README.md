@@ -57,7 +57,7 @@ python -m spacy download en_core_web_sm
 Once all dependencies are installed, you can run the application:
 
 ```bash
-python app_gui.py
+python resume_extractor_ui.py
 ```
 
 This will launch the RecruitSmart GUI application.
