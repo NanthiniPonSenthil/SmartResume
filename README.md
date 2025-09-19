@@ -18,8 +18,8 @@ Follow these steps to get the project running on your local machine.
 Open your terminal or command prompt and clone the repository using Git:
 
 ```bash
-git clone https://github.com/Kabilant87/Recruitapp_backend_POC.git
-cd Recruitapp_backend_POC
+git clone [https://github.com/sundarsekar06-lang/Resumes.git]
+cd Resume
 ```
 
 ### 2. Create and Activate a Virtual Environment
@@ -49,7 +49,9 @@ With your virtual environment activated, install the required Python packages us
 ```bash
 pip install -r requirements.txt
 ```
-
+```bash
+python -m spacy download en_core_web_sm
+```
 ### 4. Run the Application
 
 Once all dependencies are installed, you can run the application:
