@@ -5,6 +5,8 @@ from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Tuple
 import logging
 from datetime import datetime
+import os
+import google.generativeai as genai
 
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, messagebox, ttk
@@ -497,7 +499,14 @@ class EnhancedResumeUI:
         
         # Control panel
         self.create_control_panel(main_container)
-        
+
+        # Job Description input area
+        jd_frame = ttk.Frame(main_container)
+        jd_frame.pack(fill="x", pady=(10, 10))
+        ttk.Label(jd_frame, text="Job Description (paste or type):", style='Header.TLabel').pack(anchor="w")
+        self.jd_text = scrolledtext.ScrolledText(jd_frame, height=6, width=120, font=("Arial", 10))
+        self.jd_text.pack(fill="x", pady=(5, 0))
+
         # Progress bar
         self.progress = ttk.Progressbar(main_container, mode='determinate')
         self.progress.pack(fill="x", pady=(10, 5))
@@ -516,21 +525,27 @@ class EnhancedResumeUI:
         """Create the control panel with buttons"""
         control_frame = ttk.Frame(parent)
         control_frame.pack(fill="x", pady=(0, 10))
-        
+
         # Upload button
-        self.upload_btn = ttk.Button(control_frame, text="📂 Upload Resumes", 
-                                   command=self.upload_resumes, width=20)
+        self.upload_btn = ttk.Button(control_frame, text="📂 Upload Resumes",
+                                    command=self.upload_resumes, width=20)
         self.upload_btn.pack(side="left", padx=(0, 10))
-        
+
         # Extract button
-        self.extract_btn = ttk.Button(control_frame, text="🔍 Extract Data", 
-                                    command=self.run_extraction, width=20,
-                                    style='Success.TButton')
+        self.extract_btn = ttk.Button(control_frame, text="🔍 Extract Data",
+                                     command=self.run_extraction, width=20,
+                                     style='Success.TButton')
         self.extract_btn.pack(side="left", padx=(0, 10))
-        
+
+        # Filter Result button (new) - placed next to Extract Data
+        self.filter_result_btn = ttk.Button(control_frame, text="🧾 Filter Result",
+                                            command=self.filter_results, width=15,
+                                            style='Primary.TButton')
+        self.filter_result_btn.pack(side="left", padx=(0, 10))
+
         # Clear button
-        self.clear_btn = ttk.Button(control_frame, text="🗑️ Clear Results", 
-                                  command=self.clear_results, width=15)
+        self.clear_btn = ttk.Button(control_frame, text="🗑️ Clear Results",
+                                     command=self.clear_results, width=15)
         self.clear_btn.pack(side="right")
 
     def create_results_notebook(self, parent):
@@ -538,16 +553,25 @@ class EnhancedResumeUI:
         self.notebook = ttk.Notebook(parent)
         self.notebook.pack(fill="both", expand=True, pady=(0, 15))
         
-        # JSON Results tab
-        json_frame = ttk.Frame(self.notebook)
-        self.notebook.add(json_frame, text="📊 JSON Results")
-        
-        ttk.Label(json_frame, text="Extracted Data (JSON Format):", 
+        # Skills from Resume tab
+        resume_json_frame = ttk.Frame(self.notebook)
+        self.notebook.add(resume_json_frame, text="🧾 Skills from Resume")
+
+        ttk.Label(resume_json_frame, text="Skills from Resume:",
                  style='Header.TLabel').pack(anchor="w", pady=(10, 5))
-        
-        self.json_text = scrolledtext.ScrolledText(json_frame, height=20, width=100, 
-                                                  font=("Consolas", 10))
-        self.json_text.pack(fill="both", expand=True, padx=10, pady=5)
+        self.resume_json_text = scrolledtext.ScrolledText(resume_json_frame, height=20, width=100,
+                                                         font=("Consolas", 10))
+        self.resume_json_text.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Skills from JD tab
+        jd_json_frame = ttk.Frame(self.notebook)
+        self.notebook.add(jd_json_frame, text="📄 Skills from JD")
+
+        ttk.Label(jd_json_frame, text="Skills from JD:",
+                 style='Header.TLabel').pack(anchor="w", pady=(10, 5))
+        self.jd_json_text = scrolledtext.ScrolledText(jd_json_frame, height=20, width=100,
+                                                     font=("Consolas", 10))
+        self.jd_json_text.pack(fill="both", expand=True, padx=10, pady=5)
         
         # Summary tab
         summary_frame = ttk.Frame(self.notebook)
@@ -601,6 +625,89 @@ class EnhancedResumeUI:
                               f"Selected {len(self.resumes)} resume files for processing.")
             logger.info(f"Uploaded {len(self.resumes)} resume files")
 
+    def filter_results(self):
+        results = self.results or {}
+
+        # --- Extract JD skills ---
+        jd_skills = []
+        jd_meta = results.get('_job_description')
+        if isinstance(jd_meta, dict):
+            jd_skills = jd_meta.get('skills', []) or []
+
+        # --- Extract resume skills (excluding JD) ---
+        resume_skills = []
+        for k, data in results.items():
+            if k != '_job_description' and isinstance(data, dict):
+                resume_skills.extend(data.get('skills', []) or [])
+
+        # --- Deduplicate resume skills ---
+        seen, deduped_resume_skills = set(), []
+        for skill in resume_skills:
+            skill_str = str(skill).strip()
+            if skill_str and skill_str.lower() not in seen:
+                seen.add(skill_str.lower())
+                deduped_resume_skills.append(skill_str)
+
+        # --- Configure Gemini ---
+        try:
+            genai.configure(api_key="xyz")
+        except Exception:
+            pass  # Ignore offline / test failures
+
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        # --- Prompt ---
+        prompt = f"""
+        You are a recruiter. Compare the candidate's skills to the job description skills.
+
+Resume Skills: {deduped_resume_skills}
+Job Description Skills: {jd_skills}
+
+Rules:
+1. Calculate overall matching percentage (0-100) based on skills that are the same or highly similar in meaning.
+   - For example, "React" and "ReactJS" or "AWS" and "Amazon Web Services" should be considered matches.
+2. If percentage > 75, reason = "Matching: <list 2-3 key matched JD skills>".
+3. If percentage < 40, reason = "Missing: <list 2-3 key missing JD skills>".
+4. Otherwise, reason = "Partial Match: <list 2-3 matched/missing skills>".
+5. Output only valid JSON with keys: match_percentage, reason. No extra text.
+6. Use your knowledge and semantic reasoning to identify matches, not just literal string equality.
+        """
+
+        try:
+            # Call generate_content using the SDK's supported signature (prompt only).
+            # Previously supplied kwargs (temperature, top_p, candidate_count) are
+            # not supported by this client wrapper and caused a TypeError.
+            response = model.generate_content(prompt, generation_config={"temperature": 0} )
+
+            # --- Extract response text robustly ---
+            response_text = getattr(response, "text", None)
+
+            if not response_text and hasattr(response, "output"):
+                response_text = str(response.output)
+            elif not response_text and hasattr(response, "candidates"):
+                response_text = "\n".join(
+                    getattr(c, "text", str(c)) for c in response.candidates
+                )
+            if not response_text:
+                response_text = str(response)
+
+            # --- Parse as JSON if possible ---
+            try:
+                parsed = json.loads(response_text)
+                pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+            except Exception:
+                pretty = response_text
+
+            # --- Display in Summary tab ---
+            if hasattr(self, "summary_text"):
+                self.summary_text.delete("1.0", tk.END)
+                self.summary_text.insert(tk.END, pretty)
+
+        except Exception as e:
+            logger.error(f"LLM call failed: {e}")
+            messagebox.showerror("Filter Error", f"Failed to compute match using LLM: {e}")
+
+
     def run_extraction(self):
         """Run the extraction process with progress tracking"""
         if not self.resumes:
@@ -618,6 +725,14 @@ class EnhancedResumeUI:
         def extraction_worker():
             try:
                 results = {}
+                # Extract Job Description skills (from the JD input area)
+                try:
+                    jd_text = self.jd_text.get("1.0", tk.END).strip()
+                    jd_skills = self.extractor._extract_skills(jd_text) if jd_text else []
+                    results['_job_description'] = {'text': jd_text, 'skills': jd_skills}
+                except Exception as e:
+                    logger.warning(f"Failed to extract JD skills: {e}")
+                    results['_job_description'] = {'text': '', 'skills': []}
                 for i, resume_path in enumerate(self.resumes):
                     # Update progress
                     self.root.after(0, lambda i=i: self.update_progress(i))
@@ -651,11 +766,29 @@ class EnhancedResumeUI:
     def display_results(self, results):
         """Display extraction results in UI"""
         self.results = results
-        
-        # Update JSON tab
-        self.json_text.delete("1.0", tk.END)
-        formatted_json = json.dumps(results, indent=2, ensure_ascii=False)
-        self.json_text.insert(tk.END, formatted_json)
+        # Prepare resume-only entries and JD metadata
+        jd_meta = results.get('_job_description', {'text': '', 'skills': []})
+        resume_entries = {k: v for k, v in results.items() if k != '_job_description'}
+
+        # Update Resume JSON (skills) pane
+        try:
+                self.resume_json_text.delete("1.0", tk.END)
+                # Show only skills per resume for the 'Skills from Resume' tab
+                resume_skills_display = {fn: {'skills': data.get('skills', [])} if isinstance(data, dict) else {} for fn, data in resume_entries.items()}
+                # Do not include JD skills here; this pane must show only resume skills
+                formatted_resume_json = json.dumps(resume_skills_display, indent=2, ensure_ascii=False)
+                self.resume_json_text.insert(tk.END, formatted_resume_json)
+        except Exception:
+            pass
+
+        # Update JD JSON (skills) pane — show only the skills list for clarity
+        try:
+            self.jd_json_text.delete("1.0", tk.END)
+            jd_skills_only = jd_meta.get('skills', []) if isinstance(jd_meta, dict) else []
+            formatted_jd_json = json.dumps({'skills': jd_skills_only}, indent=2, ensure_ascii=False)
+            self.jd_json_text.insert(tk.END, formatted_jd_json)
+        except Exception:
+            pass
         
         # Update summary tab
         self.update_summary_tab(results)
@@ -749,17 +882,29 @@ DETAILED BREAKDOWN:
 
     def set_buttons_state(self, state):
         """Enable or disable buttons"""
-        buttons = [self.upload_btn, self.extract_btn, self.clear_btn, 
+        buttons = [self.upload_btn, self.extract_btn, getattr(self, 'filter_result_btn', None), self.clear_btn,
                   self.save_json_btn, self.export_csv_btn]
         for btn in buttons:
-            btn.config(state=state)
+            try:
+                if btn is not None:
+                    btn.config(state=state)
+            except Exception:
+                pass
 
     def clear_results(self):
         """Clear all results and reset UI"""
         if messagebox.askyesno("Clear Results", "Are you sure you want to clear all results?"):
             self.results = {}
             self.resumes = []
-            self.json_text.delete("1.0", tk.END)
+            self.resume_json_text.delete("1.0", tk.END)
+            try:
+                self.jd_text.delete("1.0", tk.END)
+            except Exception:
+                pass
+            try:
+                self.jd_json_text.delete("1.0", tk.END)
+            except Exception:
+                pass
             self.summary_text.delete("1.0", tk.END)
             self.progress['value'] = 0
             self.status_label.config(text="Ready to extract resume data")
@@ -788,7 +933,7 @@ DETAILED BREAKDOWN:
 
 Ready to process your resume files!"""
             
-            self.json_text.insert(tk.END, welcome_msg)
+            self.resume_json_text.insert(tk.END, welcome_msg)
 
     def save_json_results(self):
         """Save results to JSON file"""
