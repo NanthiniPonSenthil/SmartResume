@@ -8,6 +8,9 @@ from datetime import datetime
 
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, messagebox, ttk
+from spacy.matcher import PhraseMatcher
+from skillNer.skill_extractor_class import SkillExtractor
+from skillNer.general_params import SKILL_DB
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +19,9 @@ logger = logging.getLogger(__name__)
 import spacy
 try:
     NLP = spacy.load('en_core_web_sm')
+    # Initialize PhraseMatcher with vocab
+    phrase_matcher = PhraseMatcher(NLP.vocab)
+
 except OSError:
     print("Downloading 'en_core_web_sm' model...")
     from spacy.cli import download
@@ -33,7 +39,6 @@ class ResumeData:
     skills: List[str] = None
     experience: List[str] = None
     education: List[str] = None
-    technologies: List[str] = None
     overall_experience_years: Optional[float] = None
     certifications: List[str] = None
     languages: List[str] = None
@@ -41,7 +46,7 @@ class ResumeData:
 
     def __post_init__(self):
         # Initialize empty lists if None
-        for field in ['skills', 'experience', 'education', 'technologies', 'certifications', 'languages']:
+        for field in ['skills', 'experience', 'education', 'certifications', 'languages']:
             if getattr(self, field) is None:
                 setattr(self, field, [])
 
@@ -58,7 +63,7 @@ class ResumeData:
             'skills': 0.20,
             'experience': 0.25,
             'education': 0.10,
-            'technologies': 0.05
+            # 'technologies' removed
         }
         
         if self.name: score += weights['name']
@@ -67,7 +72,7 @@ class ResumeData:
         if self.skills: score += weights['skills'] * min(1.0, len(self.skills) / 5)
         if self.experience: score += weights['experience'] * min(1.0, len(self.experience) / 3)
         if self.education: score += weights['education'] * min(1.0, len(self.education) / 2)
-        if self.technologies: score += weights['technologies'] * min(1.0, len(self.technologies) / 5)
+    # technologies removed from model
         
         self.confidence_score = round(score * 100, 1)
         return self.confidence_score
@@ -78,10 +83,34 @@ class ResumeData:
 # =========================
 class EnhancedResumeExtractor:
     def __init__(self):
+        self.nlp = NLP
+        self.phrase_matcher = phrase_matcher
+        self.tech_keywords = self._load_tech_keywords() 
         self.skill_keywords = self._load_skill_keywords()
-        self.tech_keywords = self._load_tech_keywords()
         self.certification_keywords = self._load_certification_keywords()
         self.language_keywords = self._load_language_keywords()
+        # Optional SkillNER integration: try multiple import names and keep a reference.
+        import importlib
+        self.skillner = None
+        for candidate in ('skillner', 'skillNer', 'SkillNer'):
+            try:
+                mod = importlib.import_module(candidate)
+                # Support common shapes: class SkillnerExtractor, module-level APIs, or callable
+                if hasattr(mod, 'SkillnerExtractor'):
+                    try:
+                        self.skillner = mod.SkillnerExtractor()
+                    except Exception:
+                        self.skillner = mod
+                else:
+                    self.skillner = mod
+                logger.info(f"SkillNER loaded from module: {candidate}")
+                break
+            except ModuleNotFoundError:
+                # Try next candidate name
+                continue
+            except Exception as e:
+                logger.warning(f"SkillNER import attempt for {candidate} failed: {e}")
+                continue
 
     def _load_skill_keywords(self) -> List[str]:
         return [
@@ -92,19 +121,27 @@ class EnhancedResumeExtractor:
             "database design", "system architecture", "devops", "ci/cd"
         ]
 
-    def _load_tech_keywords(self) -> List[str]:
-        return [
-            'python', 'java', 'c++', 'c#', 'javascript', 'typescript', 'react', 'angular', 
-            'vue', 'node.js', 'django', 'flask', 'spring', 'dotnet', '.net', 'sql', 
-            'mysql', 'postgresql', 'mongodb', 'oracle', 'aws', 'azure', 'gcp', 'docker', 
-            'kubernetes', 'git', 'jenkins', 'linux', 'windows', 'html', 'css', 'sass',
-            'power bi', 'tableau', 'spark', 'hadoop', 'pandas', 'numpy', 'scikit-learn', 
-            'tensorflow', 'pytorch', 'rest api', 'graphql', 'selenium', 'jira', 
-            'confluence', 'matlab', 'sas', 'r', 'php', 'swift', 'go', 'rust', 'scala',
-            'bash', 'shell', 'redis', 'elasticsearch', 'firebase', 'android', 'ios', 
-            'xcode', 'visual studio', 'unity', 'unreal', 'salesforce', 'sap', 'abap',
-            'powerapps', 'servicenow', 'bigquery', 'looker', 'airflow', 'terraform'
-        ]
+    
+    def _load_tech_keywords(self) -> Dict[str, str]:
+        skills = [
+                "python", "java", "c++", "c#", "javascript", "typescript", "react", "angular", 
+                "vue", "node.js", "django", "flask", "spring", "dotnet", ".net", "sql", 
+                "mysql", "postgresql", "mongodb", "oracle", "aws", "azure", "gcp", "docker", 
+                "kubernetes", "git", "jenkins", "linux", "windows", "html", "css", "sass",
+                "power bi", "tableau", "spark", "hadoop", "pandas", "numpy", "scikit-learn", 
+                "tensorflow", "pytorch", "rest api", "graphql", "selenium", "jira", 
+                "confluence", "matlab", "sas", "r", "php", "swift", "go", "rust", "scala",
+                "bash", "shell", "redis", "elasticsearch", "firebase", "android", "ios", 
+                "xcode", "visual studio", "unity", "unreal", "salesforce", "sap", "abap",
+                "powerapps", "servicenow", "bigquery", "looker", "airflow", "terraform",
+                "excel", "machine learning", "data analysis", "project management", "leadership",
+                "communication", "problem solving", "teamwork", "agile", "scrum",
+                "database design", "system architecture", "devops", "ci/cd"
+            ]
+
+            # Convert to dict so SkillExtractor can use it
+        return {skill: "TECH" for skill in set(skills)}
+
 
     def _load_certification_keywords(self) -> List[str]:
         return [
@@ -136,7 +173,7 @@ class EnhancedResumeExtractor:
             data.skills = self._extract_skills(text)
             data.experience = self._extract_experience(text)
             data.education = self._extract_education(text)
-            data.technologies = self._extract_technologies(text)
+            # technologies field removed; skills are extracted by _extract_skills
             data.certifications = self._extract_certifications(text)
             data.languages = self._extract_languages(text)
             data.overall_experience_years = self._extract_overall_experience(text)
@@ -177,22 +214,65 @@ class EnhancedResumeExtractor:
         return match.group(0) if match else None
 
     def _extract_skills(self, text: str) -> List[str]:
-        """Enhanced skills extraction"""
+        """Extract skills using SkillNER if available; otherwise fallback to keyword/regex.
+
+        The method expects SkillNER to expose one of these shapes:
+        - module-level function: extract_skills(text)
+        - instance method: extract(text) or predict(text)
+        - callable object returning an iterable of skill strings
+
+        Returns a deduplicated, title-cased list limited to 15 items.
+        """
+        # Use SkillNER if available
+        if getattr(self, 'skillner', None) is not None:
+            try:
+                skills_out = []
+
+                skills_dict = self._load_tech_keywords()
+
+                matcher = PhraseMatcher(NLP.vocab, attr="LOWER")
+                matcher.add("CUSTOM_SKILLS", [NLP.make_doc(skill) for skill in skills_dict.keys()])
+                doc = NLP(text)
+                skills_out = {doc[start:end].text for _, start, end in matcher(doc)}
+
+                # Clean and title-case
+                normalized = []
+                for s in skills_out:
+                    try:
+                        s_str = str(s).strip()
+                        if s_str:
+                            normalized.append(s_str.title())
+                    except Exception:
+                        continue
+
+                # Dedupe preserving order
+                seen = set()
+                unique = []
+                for s in normalized:
+                    k = s.lower()
+                    if k not in seen:
+                        seen.add(k)
+                        unique.append(s)
+
+                return unique[:15]
+            except Exception as e:
+                logger.warning(f"SkillNER extraction failed ({e}); falling back to keyword extraction")
+
+        # Fallback logic: original keyword + regex extraction
         found_skills = []
         text_lower = text.lower()
-        
+
         for skill in self.skill_keywords:
             if re.search(rf'\b{re.escape(skill.lower())}\b', text_lower):
                 found_skills.append(skill.title())
-        
+
         # Look for skills section
         skills_match = re.search(r'(skills?|competencies|expertise)([\s\S]{0,300})', text, re.IGNORECASE)
         if skills_match:
             skills_section = skills_match.group(2)
-            # Extract bullet points or comma-separated items
             additional_skills = re.findall(r'[•\-\*]?\s*([A-Za-z][A-Za-z\s&/\-]{2,20})', skills_section)
             found_skills.extend([skill.strip().title() for skill in additional_skills if skill.strip()])
-        
+
         # Remove duplicates while preserving order
         seen = set()
         unique_skills = []
@@ -200,20 +280,10 @@ class EnhancedResumeExtractor:
             if skill.lower() not in seen:
                 seen.add(skill.lower())
                 unique_skills.append(skill)
-        
-        return unique_skills[:15]  # Limit to top 15 skills
 
-    def _extract_technologies(self, text: str) -> List[str]:
-        """Enhanced technology extraction"""
-        found_tech = []
-        text_lower = text.lower()
-        
-        for tech in self.tech_keywords:
-            if re.search(rf'\b{re.escape(tech.lower())}\b', text_lower):
-                found_tech.append(tech)
-        
-        # Remove duplicates and sort
-        return sorted(list(set(found_tech)))
+        return unique_skills[:15]
+
+    
 
     def _extract_certifications(self, text: str) -> List[str]:
         """Extract professional certifications"""
@@ -646,8 +716,7 @@ DETAILED BREAKDOWN:
                     summary += f"   💼 Experience: {data['overall_experience_years']} years\n"
                 if data.get('skills'):
                     summary += f"   🎯 Skills: {len(data['skills'])} found\n"
-                if data.get('technologies'):
-                    summary += f"   💻 Technologies: {len(data['technologies'])} found\n"
+                # technologies display removed
                 if data.get('experience'):
                     summary += f"   🏢 Work Experience: {len(data['experience'])} entries\n"
                 if data.get('education'):
@@ -655,32 +724,19 @@ DETAILED BREAKDOWN:
                 
                 summary += "\n"
         
-        # Add technology and skills statistics
+        # Add skills statistics
         all_skills = []
-        all_technologies = []
-        
         for data in results.values():
             if "error" not in data:
                 all_skills.extend(data.get('skills', []))
-                all_technologies.extend(data.get('technologies', []))
         
-        if all_skills or all_technologies:
-            summary += f"\nTOP SKILLS & TECHNOLOGIES ACROSS ALL RESUMES:\n{'=' * 50}\n"
-            
-            # Count occurrences
+        if all_skills:
+            summary += f"\nTOP SKILLS ACROSS ALL RESUMES:\n{'=' * 50}\n"
             from collections import Counter
-            
-            if all_skills:
-                skill_counts = Counter(all_skills)
-                summary += "\n🎯 Most Common Skills:\n"
-                for skill, count in skill_counts.most_common(10):
-                    summary += f"   • {skill}: {count} resume(s)\n"
-            
-            if all_technologies:
-                tech_counts = Counter(all_technologies)
-                summary += "\n💻 Most Common Technologies:\n"
-                for tech, count in tech_counts.most_common(10):
-                    summary += f"   • {tech}: {count} resume(s)\n"
+            skill_counts = Counter(all_skills)
+            summary += "\n🎯 Most Common Skills:\n"
+            for skill, count in skill_counts.most_common(10):
+                summary += f"   • {skill}: {count} resume(s)\n"
         
         self.summary_text.insert(tk.END, summary)
 
@@ -713,7 +769,7 @@ DETAILED BREAKDOWN:
 
 🚀 FEATURES:
 • Extract contact information (name, email, phone)
-• Identify skills and technologies
+• Identify skills
 • Parse work experience and education
 • Professional certifications detection
 • Language skills identification
@@ -784,10 +840,10 @@ Ready to process your resume files!"""
                 with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
                     # Define CSV headers
                     fieldnames = [
-                        'filename', 'name', 'email', 'phone', 'overall_experience_years',
-                        'confidence_score', 'skills', 'technologies', 'experience', 
-                        'education', 'certifications', 'languages', 'error'
-                    ]
+                            'filename', 'name', 'email', 'phone', 'overall_experience_years',
+                            'confidence_score', 'skills', 'experience', 
+                            'education', 'certifications', 'languages', 'error'
+                        ]
                     
                     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                     writer.writeheader()
@@ -823,7 +879,7 @@ Ready to process your resume files!"""
 
 ✨ FEATURES:
 • Contact information extraction
-• Skills and technologies identification
+• Skills identification
 • Work experience parsing
 • Education history extraction
 • Professional certifications detection

@@ -1,0 +1,17 @@
+
+import google.generativeai as genai
+
+# Configure Gemini with your API key
+genai.configure(api_key="AIzaSyBiwoGW2oc3rhjcN-NTlEGWqoowRCs-dGQ")
+
+# Pick the Gemini model
+model = genai.GenerativeModel("gemini-1.5-flash")
+
+# Basic prompt
+prompt = "Write a short greeting message."
+
+# Generate response
+response = model.generate_content(prompt)
+
+# Print the output
+print(response.text)
