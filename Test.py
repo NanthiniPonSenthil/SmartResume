@@ -1,7 +1,7 @@
 import google.generativeai as genai
 
 # Initialize Google API key
-API_KEY = "Your API Key Here" 
+API_KEY = "XYZ" 
 genai.configure(api_key=API_KEY)
 
 # Example skills
@@ -9,7 +9,7 @@ resume_skills = ["Python", "SQL", "AWS", '.NET']
 jd_skills = ["Python", "SQL","Docker","MySQL","Kubernetes","Java","Azure","React"]
 
 # Model
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-pro-latest")
 
 # Prompt for Google Gemini
 prompt = f"""

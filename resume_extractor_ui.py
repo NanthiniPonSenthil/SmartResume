@@ -126,20 +126,28 @@ class EnhancedResumeExtractor:
     
     def _load_tech_keywords(self) -> Dict[str, str]:
         skills = [
-                "python", "java", "c++", "c#", "javascript", "typescript", "react", "angular", 
-                "vue", "node.js", "django", "flask", "spring", "dotnet", ".net", "sql", 
-                "mysql", "postgresql", "mongodb", "oracle", "aws", "azure", "gcp", "docker", 
-                "kubernetes", "git", "jenkins", "linux", "windows", "html", "css", "sass",
-                "power bi", "tableau", "spark", "hadoop", "pandas", "numpy", "scikit-learn", 
-                "tensorflow", "pytorch", "rest api", "graphql", "selenium", "jira", 
-                "confluence", "matlab", "sas", "r", "php", "swift", "go", "rust", "scala",
-                "bash", "shell", "redis", "elasticsearch", "firebase", "android", "ios", 
-                "xcode", "visual studio", "unity", "unreal", "salesforce", "sap", "abap",
-                "powerapps", "servicenow", "bigquery", "looker", "airflow", "terraform",
-                "excel", "machine learning", "data analysis", "project management", "leadership",
-                "communication", "problem solving", "teamwork", "agile", "scrum",
-                "database design", "system architecture", "devops", "ci/cd"
-            ]
+        "python", "java", "c++", "c#", "javascript", "typescript", "react", "angular",
+        "vue", "node.js", "django", "flask", "spring", "dotnet", ".net", ".net core",
+        "asp.net", "asp.net core", "entity framework", "web api", "ajax", "sql", "mysql",
+        "postgresql", "mongodb", "oracle", "aws", "azure", "gcp", "docker", "kubernetes",
+        "git", "jenkins", "linux", "windows", "html", "css", "sass", "power bi", "tableau",
+        "spark", "hadoop", "pandas", "numpy", "scikit-learn", "tensorflow", "pytorch",
+        "rest api", "graphql", "selenium", "jira", "confluence", "matlab", "sas", "r",
+        "php", "swift", "go", "rust", "scala", "bash", "shell", "redis", "elasticsearch",
+        "firebase", "android", "ios", "xcode", "visual studio", "unity", "unreal", "salesforce",
+        "sap", "abap", "powerapps", "servicenow", "bigquery", "looker", "airflow", "terraform",
+        "excel", "machine learning", "data analysis", "project management", "leadership",
+        "communication", "problem solving", "teamwork", "agile", "scrum", "database design",
+        "system architecture", "devops", "ci/cd", "eclipse", "shell scripting", "apache tomcat",
+        "nagios", "splunk", "ansible", "kotlin", "dart", "perl", "julia", "rpa", "uipath",
+        "next.js", "nuxt.js", "svelte", "express.js", "laravel", "ruby on rails", "cassandra",
+        "neo4j", "mariadb", "firebase realtime database", "snowflake", "redshift", "bigtable",
+        "helm", "argocd", "istio", "prometheus", "grafana", "vault", "nomad", "databricks",
+        "keras", "lightgbm", "xgboost", "hive", "apache kafka", "apache nifi", "cypress",
+        "postman", "appium", "robot framework", "jmeter", "trello", "asana", "monday.com",
+        "webpack", "babel", "docker compose", "vmware", "hyper-v", "powershell"
+    ]
+
 
             # Convert to dict so SkillExtractor can use it
         return {skill: "TECH" for skill in set(skills)}
@@ -147,11 +155,19 @@ class EnhancedResumeExtractor:
 
     def _load_certification_keywords(self) -> List[str]:
         return [
-            'aws certified', 'azure certified', 'google cloud certified', 'cissp', 
-            'cism', 'pmp', 'scrum master', 'six sigma', 'itil', 'comptia', 'ccna', 
-            'ccnp', 'ccie', 'mcse', 'oracle certified', 'salesforce certified',
-            'certified kubernetes', 'docker certified', 'red hat certified'
-        ]
+           'aws certified', 'azure certified', 'google cloud certified', 'cissp', 'cism',
+    'pmp', 'scrum master', 'scrum master certified (scrum alliance)', 'six sigma', 'itil',
+    'comptia', 'ccna', 'ccnp', 'ccie', 'mcse',
+    'microsoft certified', 'oracle certified', 'salesforce certified', 'certified kubernetes', 'docker certified',
+    'red hat certified', 'aws certified solutions architect', 'aws certified developer', 'aws certified sysops administrator', 'aws certified devops engineer',
+    'aws cloud practitioner', 'azure fundamentals', 'azure administrator associate', 'azure solutions architect expert', 'azure security engineer associate',
+    'azure devops engineer expert', 'google cloud associate cloud engineer', 'google cloud professional cloud architect', 'oscp', 'comptia security+',
+    'comptia network+', 'prince2', 'lean six sigma', 'pmi-acp', 'safe agilist',
+    'vmware certified professional', 'microsoft certified: data analyst associate', 'google data analytics professional certificate', 'snowflake snowpro', 'red hat certified engineer',
+    'salesforce certified administrator', 'salesforce certified developer'
+        ]  
+    
+
 
     def _load_language_keywords(self) -> List[str]:
         return [
@@ -309,6 +325,47 @@ class EnhancedResumeExtractor:
                 found_certs.append(match.strip().title())
         
         return list(set(found_certs))[:10]
+
+    def _jd_cert_mandatory(self, text: str, certs: List[str]) -> str:
+        """Determine if any certification mentioned in the JD is explicitly mandatory.
+
+        Returns 'yes' if any certification appears in the same sentence as a mandatory
+        keyword (must, required, mandatory, etc.), otherwise returns 'Optional'.
+        """
+        try:
+            if not text or not certs:
+                return 'Optional'
+
+            # Candidate mandatory indicators
+            mandatory_phrases = [
+                'must be', 'must have', 'must', 'required', 'required to', 'mandatory',
+                'is required', 'should be', 'must hold', 'must possess', 'required:'
+            ]
+
+            # Break text into sentences to check proximity
+            sentences = re.split(r'[\.\n!?]+', text)
+
+            for sent in sentences:
+                s = sent.strip().lower()
+                if not s:
+                    continue
+
+                # If sentence mentions a known certification and a mandatory phrase, it's mandatory
+                for cert in certs:
+                    if cert and cert.lower() in s:
+                        for phrase in mandatory_phrases:
+                            if phrase in s:
+                                return 'yes'
+
+                # Also consider generic patterns like 'must be certified' in the same sentence
+                if 'certified' in s:
+                    for phrase in mandatory_phrases:
+                        if phrase in s:
+                            return 'yes'
+
+            return 'Optional'
+        except Exception:
+            return 'Optional'
 
     def _extract_languages(self, text: str) -> List[str]:
         """Extract spoken languages"""
@@ -607,8 +664,8 @@ class EnhancedResumeUI:
 
     def upload_resumes(self):
         """Handle resume file uploads"""
-        files = filedialog.askopenfilenames(
-            title="Select Resume Files",
+        file = filedialog.askopenfilename(
+            title="Select a Resume File",
             filetypes=[
                 ("All Supported", "*.pdf *.docx *.txt"),
                 ("PDF files", "*.pdf"),
@@ -617,22 +674,26 @@ class EnhancedResumeUI:
                 ("All files", "*.*")
             ]
         )
-        
-        if files:
-            self.resumes = [Path(f) for f in files]
-            self.status_label.config(text=f"✅ {len(self.resumes)} resume(s) selected")
-            messagebox.showinfo("Files Selected", 
-                              f"Selected {len(self.resumes)} resume files for processing.")
-            logger.info(f"Uploaded {len(self.resumes)} resume files")
+
+        if file:
+            # Store as a single-item list to keep later code paths unchanged
+            self.resumes = [Path(file)]
+            self.status_label.config(text=f"✅ 1 resume selected")
+            messagebox.showinfo("File Selected", "Selected 1 resume file for processing.")
+            logger.info(f"Uploaded 1 resume file: {file}")
 
     def filter_results(self):
         results = self.results or {}
 
         # --- Extract JD skills ---
         jd_skills = []
+        jd_certs = []
+        jd_is_mandatory = 'Optional'
         jd_meta = results.get('_job_description')
         if isinstance(jd_meta, dict):
             jd_skills = jd_meta.get('skills', []) or []
+            jd_certs = jd_meta.get('certifications', []) or []
+            jd_is_mandatory = jd_meta.get('isCertMandatory', 'Optional') or 'Optional'
 
         # --- Extract resume skills (excluding JD) ---
         resume_skills = []
@@ -648,36 +709,48 @@ class EnhancedResumeUI:
                 seen.add(skill_str.lower())
                 deduped_resume_skills.append(skill_str)
 
+        # --- Aggregate resume certifications ---
+        resume_certs = []
+        seen_c = set()
+        for k, data in results.items():
+            if k != '_job_description' and isinstance(data, dict):
+                for c in data.get('certifications', []) or []:
+                    cstr = str(c).strip()
+                    if cstr and cstr.lower() not in seen_c:
+                        seen_c.add(cstr.lower())
+                        resume_certs.append(cstr)
+
         # --- Configure Gemini ---
         try:
-            genai.configure(api_key="xyz")
+            genai.configure(api_key="XYZ")
         except Exception:
             pass  # Ignore offline / test failures
 
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-pro-latest")
 
         # --- Prompt ---
-        prompt = f"""
-        You are a recruiter. Compare the candidate's skills to the job description skills.
+        prompt = f"""You are a recruiter. Compare the candidate's skills and certifications to the job description.
 
-Resume Skills: {deduped_resume_skills}
-Job Description Skills: {jd_skills}
+        Resume Skills: {deduped_resume_skills}
+        Resume Certifications: {resume_certs}
+        Job Description Skills: {jd_skills}
+        Job Description Certifications: {jd_certs}
+        Is Certification Mandatory: {jd_is_mandatory}
 
-Rules:
-1. Calculate overall matching percentage (0-100) based on skills that are the same or highly similar in meaning.
-   - For example, "React" and "ReactJS" or "AWS" and "Amazon Web Services" should be considered matches.
-2. If percentage > 75, reason = "Matching: <list 2-3 key matched JD skills>".
-3. If percentage < 40, reason = "Missing: <list 2-3 key missing JD skills>".
-4. Otherwise, reason = "Partial Match: <list 2-3 matched/missing skills>".
-5. Output only valid JSON with keys: match_percentage, reason. No extra text.
-6. Use your knowledge and semantic reasoning to identify matches, not just literal string equality.
+        Scoring rules (apply these strictly):
+        1. If JD specifies a certification as mandatory ('yes') and that certification is missing from Resume Certifications, return a LOW match_percentage (0-30) and set reason to exactly: "Missing Certification". Do not include skills in the reason in this case.
+        2. Otherwise, compute an overall matching percentage (0-100) prioritizing skill overlap. Additionally, award a meaningful boost to the percentage if JD certifications (mandatory or optional) are present in the resume.
+           - Treat semantically similar terms as matches (e.g., "AWS" ~ "Amazon Web Services", "React" ~ "ReactJS").
+        3. If percentage > 75, reason = "Matching: <list 2-3 key matched JD skills>".
+        4. If percentage < 40 and not a missing certification case, reason = "Missing: <list 2-3 key missing JD skills>".
+        5. Otherwise, reason = "Partial Match: <list 2-3 matched/missing skills>".
+        6. Output only valid JSON with keys: match_percentage (number), reason (string). No extra text.
+        7. Use semantic reasoning — do not rely solely on literal string equality.
         """
 
         try:
             # Call generate_content using the SDK's supported signature (prompt only).
-            # Previously supplied kwargs (temperature, top_p, candidate_count) are
-            # not supported by this client wrapper and caused a TypeError.
-            response = model.generate_content(prompt, generation_config={"temperature": 0} )
+            response = model.generate_content(prompt)
 
             # --- Extract response text robustly ---
             response_text = getattr(response, "text", None)
@@ -685,9 +758,8 @@ Rules:
             if not response_text and hasattr(response, "output"):
                 response_text = str(response.output)
             elif not response_text and hasattr(response, "candidates"):
-                response_text = "\n".join(
-                    getattr(c, "text", str(c)) for c in response.candidates
-                )
+                response_text = "\n".join(getattr(c, "text", str(c)) for c in response.candidates)
+
             if not response_text:
                 response_text = str(response)
 
@@ -706,8 +778,6 @@ Rules:
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
             messagebox.showerror("Filter Error", f"Failed to compute match using LLM: {e}")
-
-
     def run_extraction(self):
         """Run the extraction process with progress tracking"""
         if not self.resumes:
@@ -729,10 +799,17 @@ Rules:
                 try:
                     jd_text = self.jd_text.get("1.0", tk.END).strip()
                     jd_skills = self.extractor._extract_skills(jd_text) if jd_text else []
-                    results['_job_description'] = {'text': jd_text, 'skills': jd_skills}
+                    jd_certs = self.extractor._extract_certifications(jd_text) if jd_text else []
+                    jd_cert_mandatory = self.extractor._jd_cert_mandatory(jd_text, jd_certs)
+                    results['_job_description'] = {
+                        'text': jd_text,
+                        'skills': jd_skills,
+                        'certifications': jd_certs,
+                        'isCertMandatory': jd_cert_mandatory
+                    }
                 except Exception as e:
                     logger.warning(f"Failed to extract JD skills: {e}")
-                    results['_job_description'] = {'text': '', 'skills': []}
+                    results['_job_description'] = {'text': '', 'skills': [], 'certifications': [], 'isCertMandatory': 'Optional'}
                 for i, resume_path in enumerate(self.resumes):
                     # Update progress
                     self.root.after(0, lambda i=i: self.update_progress(i))
@@ -773,8 +850,16 @@ Rules:
         # Update Resume JSON (skills) pane
         try:
                 self.resume_json_text.delete("1.0", tk.END)
-                # Show only skills per resume for the 'Skills from Resume' tab
-                resume_skills_display = {fn: {'skills': data.get('skills', [])} if isinstance(data, dict) else {} for fn, data in resume_entries.items()}
+                # Show skills and certifications per resume for the 'Skills from Resume' tab
+                resume_skills_display = {}
+                for fn, data in resume_entries.items():
+                    if isinstance(data, dict):
+                        resume_skills_display[fn] = {
+                            'skills': data.get('skills', []),
+                            'certifications': data.get('certifications', [])
+                        }
+                    else:
+                        resume_skills_display[fn] = {}
                 # Do not include JD skills here; this pane must show only resume skills
                 formatted_resume_json = json.dumps(resume_skills_display, indent=2, ensure_ascii=False)
                 self.resume_json_text.insert(tk.END, formatted_resume_json)
@@ -784,8 +869,13 @@ Rules:
         # Update JD JSON (skills) pane — show only the skills list for clarity
         try:
             self.jd_json_text.delete("1.0", tk.END)
-            jd_skills_only = jd_meta.get('skills', []) if isinstance(jd_meta, dict) else []
-            formatted_jd_json = json.dumps({'skills': jd_skills_only}, indent=2, ensure_ascii=False)
+            if isinstance(jd_meta, dict):
+                jd_skills_only = jd_meta.get('skills', [])
+                jd_certs = jd_meta.get('certifications', [])
+                jd_mandatory = jd_meta.get('isCertMandatory', 'Optional')
+                formatted_jd_json = json.dumps({'skills': jd_skills_only, 'certifications': jd_certs, 'isCertMandatory': jd_mandatory}, indent=2, ensure_ascii=False)
+            else:
+                formatted_jd_json = json.dumps({'skills': []}, indent=2, ensure_ascii=False)
             self.jd_json_text.insert(tk.END, formatted_jd_json)
         except Exception:
             pass

@@ -1,17 +1,28 @@
 
 import google.generativeai as genai
 
-# Configure Gemini with your API key
-genai.configure(api_key="Your API Key Here")
+# --- PASTE YOUR GEMINI API KEY HERE ---
+API_KEY = "XYZ"
+# ------------------------------------
 
-# Pick the Gemini model
-model = genai.GenerativeModel("gemini-1.5-flash")
+def test_gemini_api_key():
+    """
+    Tests the Gemini API key by listing the available models.
+    """
+    try:
 
-# Basic prompt
-prompt = "Write a short greeting message."
+        genai.configure(api_key=API_KEY)
+        models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        if models:
+            print("Successfully connected to Gemini API.")
+            print("Available models for content generation:")
+            for m in models:
+                print(f"- {m.name}")
+        else:
+            print("Successfully connected to Gemini API, but no models for content generation found.")
 
-# Generate response
-response = model.generate_content(prompt)
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
-# Print the output
-print(response.text)
+if __name__ == "__main__":
+    test_gemini_api_key()
