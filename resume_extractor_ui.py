@@ -14,6 +14,8 @@ from spacy.matcher import PhraseMatcher
 from skillNer.skill_extractor_class import SkillExtractor
 from skillNer.general_params import SKILL_DB
 
+from Test_SkillNER import build_minimal_skills_db
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -178,32 +180,21 @@ class EnhancedResumeExtractor:
 
     def extract(self, text: str) -> ResumeData:
         """Main extraction method with improved error handling"""
-        try:
-            data = ResumeData()
-            
-            # Process text with spaCy
-            doc = NLP(text)
-            
-            # Extract all fields
-            data.name = self._extract_name(doc)
-            data.email = self._extract_email(text)
-            data.phone = self._extract_phone(text)
-            data.skills = self._extract_skills(text)
-            data.experience = self._extract_experience(text)
-            data.education = self._extract_education(text)
-            # technologies field removed; skills are extracted by _extract_skills
-            data.certifications = self._extract_certifications(text)
-            data.languages = self._extract_languages(text)
-            data.overall_experience_years = self._extract_overall_experience(text)
-            
-            # Calculate confidence score
-            data.calculate_confidence()
-            
-            return data
-            
-        except Exception as e:
-            logger.error(f"Error during extraction: {str(e)}")
-            return ResumeData()
+        data = ResumeData()
+        # Process text with spaCy
+        doc = NLP(text)
+        # Extract all fields
+        data.name = self._extract_name(doc)
+        data.email = self._extract_email(text)
+        data.phone = self._extract_phone(text)
+        data.skills = self._extract_skills(text)
+        data.experience = self._extract_experience(text)
+        data.education = self._extract_education(text)
+        # technologies field removed; skills are extracted by _extract_skills
+        data.certifications = self._extract_certifications(text)
+        data.languages = self._extract_languages(text)
+        data.overall_experience_years = self._extract_overall_experience(text)
+        return data
 
     def _clean_text(self, text: str) -> str:
         """Clean and normalize text for better extraction"""
@@ -244,14 +235,21 @@ class EnhancedResumeExtractor:
         # Use SkillNER if available
         if getattr(self, 'skillner', None) is not None:
             try:
-                skills_out = []
+                skills_out = []            
 
-                skills_dict = self._load_tech_keywords()
-
-                matcher = PhraseMatcher(NLP.vocab, attr="LOWER")
-                matcher.add("CUSTOM_SKILLS", [NLP.make_doc(skill) for skill in skills_dict.keys()])
+                
                 doc = NLP(text)
-                skills_out = {doc[start:end].text for _, start, end in matcher(doc)}
+                exceptions = [".NET", ".net", ".Net"]
+                skills_out = [
+                    token.text for token in doc
+                    if token.text in exceptions                          # keep only exceptions
+                    or (
+                        not token.is_stop                                # remove stop words like 'is', 'a', 'the'
+                        and token.is_alpha                                # keep only alphabetic words
+                        and token.pos_ != "PRON"                          # remove pronouns like 'he', 'she'
+                        and token.ent_type_ not in ["PERSON"]            # remove names
+                    )
+                ]
 
                 # Clean and title-case
                 normalized = []
@@ -272,7 +270,7 @@ class EnhancedResumeExtractor:
                         seen.add(k)
                         unique.append(s)
 
-                return unique[:15]
+                return unique
             except Exception as e:
                 logger.warning(f"SkillNER extraction failed ({e}); falling back to keyword extraction")
 
@@ -299,7 +297,7 @@ class EnhancedResumeExtractor:
                 seen.add(skill.lower())
                 unique_skills.append(skill)
 
-        return unique_skills[:15]
+        return unique_skills
 
     
 
@@ -323,8 +321,15 @@ class EnhancedResumeExtractor:
                 if isinstance(match, tuple):
                     match = match[0]
                 found_certs.append(match.strip().title())
-        
-        return list(set(found_certs))[:10]
+
+        # Preserve order and remove duplicates
+        return list(dict.fromkeys(found_certs))
+
+    def extract_skills_and_certs(self, text: str) -> Tuple[List[str], List[str]]:
+        """Return (skills, certifications) for reuse (no duplicates of logic)."""
+        skills = self._extract_skills(text) if text else []
+        certs = self._extract_certifications(text) if text else []
+        return skills, certs
 
     def _jd_cert_mandatory(self, text: str, certs: List[str]) -> str:
         """Determine if any certification mentioned in the JD is explicitly mandatory.
@@ -332,40 +337,62 @@ class EnhancedResumeExtractor:
         Returns 'yes' if any certification appears in the same sentence as a mandatory
         keyword (must, required, mandatory, etc.), otherwise returns 'Optional'.
         """
-        try:
-            if not text or not certs:
-                return 'Optional'
+        # Simpler deterministic logic: scan sentences for a certification token and a mandatory phrase.
+        if not text:
+            return 'Optional'
 
-            # Candidate mandatory indicators
-            mandatory_phrases = [
-                'must be', 'must have', 'must', 'required', 'required to', 'mandatory',
-                'is required', 'should be', 'must hold', 'must possess', 'required:'
-            ]
+        mandatory_phrases = [
+            'must be', 'must have', 'must', 'required', 'required to', 'mandatory',
+            'is required', 'should be', 'must hold', 'must possess', 'required:'
+        ]
 
-            # Break text into sentences to check proximity
-            sentences = re.split(r'[\.\n!?]+', text)
-
-            for sent in sentences:
-                s = sent.strip().lower()
-                if not s:
+        # Build a set of lowercase cert tokens from provided certs and from known keywords
+        cert_tokens = set()
+        if certs:
+            for c in certs:
+                if not c:
                     continue
+                for tok in re.findall(r"[A-Za-z0-9]+", c.lower()):
+                    if len(tok) >= 2:
+                        cert_tokens.add(tok)
 
-                # If sentence mentions a known certification and a mandatory phrase, it's mandatory
-                for cert in certs:
-                    if cert and cert.lower() in s:
-                        for phrase in mandatory_phrases:
-                            if phrase in s:
-                                return 'yes'
+        # include core tokens from certification_keywords to catch misspellings or alternate phrasing
+        for cert_kw in self.certification_keywords:
+            for tok in re.findall(r"[A-Za-z0-9]+", cert_kw.lower()):
+                if len(tok) >= 2:
+                    cert_tokens.add(tok)
 
-                # Also consider generic patterns like 'must be certified' in the same sentence
-                if 'certified' in s:
-                    for phrase in mandatory_phrases:
-                        if phrase in s:
-                            return 'yes'
+        # Also include short canonical tokens for cloud providers and common certs
+        extra = {'aws', 'azure', 'google', 'gcp', 'pmp', 'cissp', 'cism', 'docker', 'kubernetes'}
+        cert_tokens.update(extra)
 
-            return 'Optional'
-        except Exception:
-            return 'Optional'
+        # Break text into sentences and check
+        sentences = re.split(r'[\.\n!?]+', text)
+        for sent in sentences:
+            s = sent.strip().lower()
+            if not s:
+                continue
+
+            # quick check for 'certif' misspellings / mentions
+            has_cert_mention = False
+            if 'certif' in s or 'certificate' in s or 'certified' in s or 'cerification' in s:
+                has_cert_mention = True
+
+            # check for known cert tokens in the sentence
+            for tok in cert_tokens:
+                if tok in s:
+                    has_cert_mention = True
+                    break
+
+            if not has_cert_mention:
+                continue
+
+            # If any mandatory phrase is present in the same sentence, mark as required
+            for phrase in mandatory_phrases:
+                if phrase in s:
+                    return 'yes'
+
+        return 'Optional'
 
     def _extract_languages(self, text: str) -> List[str]:
         """Extract spoken languages"""
@@ -676,60 +703,49 @@ class EnhancedResumeUI:
         )
 
         if file:
-            # Store as a single-item list to keep later code paths unchanged
             self.resumes = [Path(file)]
-            self.status_label.config(text=f"✅ 1 resume selected")
+            self.status_label.config(text="✅ 1 resume selected")
             messagebox.showinfo("File Selected", "Selected 1 resume file for processing.")
             logger.info(f"Uploaded 1 resume file: {file}")
+    def build_minimal_skills_db(skills_list):
+        db = {}
+        for i, s in enumerate(skills_list):
+            key = f"KS_{i}_{s.replace(' ', '_')}"
+            db[key] = {
+                'skill_len': len(s.split()),
+                'high_surfce_forms': {'full': s, 'abv': s},
+                'low_surface_forms': [],
+                'match_on_tokens': False,
+                'skill_type': 'TECH'
+            }
+        return db
 
     def filter_results(self):
         results = self.results or {}
-
-        # --- Extract JD skills ---
-        jd_skills = []
-        jd_certs = []
-        jd_is_mandatory = 'Optional'
-        jd_meta = results.get('_job_description')
-        if isinstance(jd_meta, dict):
-            jd_skills = jd_meta.get('skills', []) or []
-            jd_certs = jd_meta.get('certifications', []) or []
-            jd_is_mandatory = jd_meta.get('isCertMandatory', 'Optional') or 'Optional'
-
-        # --- Extract resume skills (excluding JD) ---
-        resume_skills = []
-        for k, data in results.items():
-            if k != '_job_description' and isinstance(data, dict):
-                resume_skills.extend(data.get('skills', []) or [])
-
-        # --- Deduplicate resume skills ---
-        seen, deduped_resume_skills = set(), []
-        for skill in resume_skills:
-            skill_str = str(skill).strip()
-            if skill_str and skill_str.lower() not in seen:
-                seen.add(skill_str.lower())
-                deduped_resume_skills.append(skill_str)
-
-        # --- Aggregate resume certifications ---
+        jd_meta = results.get('_job_description', {})
+        jd_skills = jd_meta.get('skills', [])
+        jd_certs = jd_meta.get('certifications', [])
+        jd_is_mandatory = jd_meta.get('isCertMandatory', 'Optional')
+        resume = results.get('resume', {})
+        deduped_resume_skills = []
+        for s in resume.get('skills', []) or []:
+            ss = str(s).strip()
+            if ss and ss.lower() not in {x.lower() for x in deduped_resume_skills}:
+                deduped_resume_skills.append(ss)
         resume_certs = []
-        seen_c = set()
-        for k, data in results.items():
-            if k != '_job_description' and isinstance(data, dict):
-                for c in data.get('certifications', []) or []:
-                    cstr = str(c).strip()
-                    if cstr and cstr.lower() not in seen_c:
-                        seen_c.add(cstr.lower())
-                        resume_certs.append(cstr)
+        for c in resume.get('certifications', []) or []:
+            cc = str(c).strip()
+            if cc and cc.lower() not in {x.lower() for x in resume_certs}:
+                resume_certs.append(cc)
 
-        # --- Configure Gemini ---
         try:
-            genai.configure(api_key="XYZ")
+            genai.configure(api_key="xyz")
         except Exception:
-            pass  # Ignore offline / test failures
-
+            pass
         model = genai.GenerativeModel("gemini-pro-latest")
 
         # --- Prompt ---
-        prompt = f"""You are a recruiter. Compare the candidate's skills and certifications to the job description.
+        prompt = f"""You are a recruiter. Compare the candidate's skills and certifications to the job description. There may be extra unnecessary information in both the resume and job description. Focus only on skills and certifications.
 
         Resume Skills: {deduped_resume_skills}
         Resume Certifications: {resume_certs}
@@ -770,7 +786,6 @@ class EnhancedResumeUI:
             except Exception:
                 pretty = response_text
 
-            # --- Display in Summary tab ---
             if hasattr(self, "summary_text"):
                 self.summary_text.delete("1.0", tk.END)
                 self.summary_text.insert(tk.END, pretty)
@@ -795,36 +810,24 @@ class EnhancedResumeUI:
         def extraction_worker():
             try:
                 results = {}
-                # Extract Job Description skills (from the JD input area)
-                try:
-                    jd_text = self.jd_text.get("1.0", tk.END).strip()
-                    jd_skills = self.extractor._extract_skills(jd_text) if jd_text else []
-                    jd_certs = self.extractor._extract_certifications(jd_text) if jd_text else []
-                    jd_cert_mandatory = self.extractor._jd_cert_mandatory(jd_text, jd_certs)
-                    results['_job_description'] = {
-                        'text': jd_text,
-                        'skills': jd_skills,
-                        'certifications': jd_certs,
-                        'isCertMandatory': jd_cert_mandatory
-                    }
-                except Exception as e:
-                    logger.warning(f"Failed to extract JD skills: {e}")
-                    results['_job_description'] = {'text': '', 'skills': [], 'certifications': [], 'isCertMandatory': 'Optional'}
-                for i, resume_path in enumerate(self.resumes):
-                    # Update progress
-                    self.root.after(0, lambda i=i: self.update_progress(i))
-                    
-                    try:
-                        text, success = FileReader.read_text_from_path(resume_path)
-                        if success:
-                            data = self.extractor.extract(text)
-                            results[resume_path.name] = data.to_dict()
-                        else:
-                            results[resume_path.name] = {"error": text, "confidence_score": 0.0}
-                    except Exception as e:
-                        results[resume_path.name] = {"error": f"Processing failed: {str(e)}", 
-                                                   "confidence_score": 0.0}
-                        logger.error(f"Error processing {resume_path.name}: {str(e)}")
+                jd_text = self.jd_text.get("1.0", tk.END).strip()
+                jd_skills, jd_certs = self.extractor.extract_skills_and_certs(jd_text) if jd_text else ([], [])
+                jd_cert_mandatory = self.extractor._jd_cert_mandatory(jd_text, jd_certs)
+                results['_job_description'] = {
+                    'text': jd_text,
+                    'skills': jd_skills,
+                    'certifications': jd_certs,
+                    'isCertMandatory': jd_cert_mandatory
+                }
+                # Process only first resume if present
+                if self.resumes:
+                    resume_path = self.resumes[0]
+                    text, success = FileReader.read_text_from_path(resume_path)
+                    if success:
+                        data = self.extractor.extract(text)
+                        results['resume'] = data.to_dict()
+                    else:
+                        results['resume'] = {}
                 
                 # Update UI with results
                 self.root.after(0, lambda: self.display_results(results))
@@ -843,55 +846,22 @@ class EnhancedResumeUI:
     def display_results(self, results):
         """Display extraction results in UI"""
         self.results = results
-        # Prepare resume-only entries and JD metadata
         jd_meta = results.get('_job_description', {'text': '', 'skills': []})
-        resume_entries = {k: v for k, v in results.items() if k != '_job_description'}
-
-        # Update Resume JSON (skills) pane
-        try:
-                self.resume_json_text.delete("1.0", tk.END)
-                # Show skills and certifications per resume for the 'Skills from Resume' tab
-                resume_skills_display = {}
-                for fn, data in resume_entries.items():
-                    if isinstance(data, dict):
-                        resume_skills_display[fn] = {
-                            'skills': data.get('skills', []),
-                            'certifications': data.get('certifications', [])
-                        }
-                    else:
-                        resume_skills_display[fn] = {}
-                # Do not include JD skills here; this pane must show only resume skills
-                formatted_resume_json = json.dumps(resume_skills_display, indent=2, ensure_ascii=False)
-                self.resume_json_text.insert(tk.END, formatted_resume_json)
-        except Exception:
-            pass
-
-        # Update JD JSON (skills) pane — show only the skills list for clarity
-        try:
-            self.jd_json_text.delete("1.0", tk.END)
-            if isinstance(jd_meta, dict):
-                jd_skills_only = jd_meta.get('skills', [])
-                jd_certs = jd_meta.get('certifications', [])
-                jd_mandatory = jd_meta.get('isCertMandatory', 'Optional')
-                formatted_jd_json = json.dumps({'skills': jd_skills_only, 'certifications': jd_certs, 'isCertMandatory': jd_mandatory}, indent=2, ensure_ascii=False)
-            else:
-                formatted_jd_json = json.dumps({'skills': []}, indent=2, ensure_ascii=False)
-            self.jd_json_text.insert(tk.END, formatted_jd_json)
-        except Exception:
-            pass
-        
+        resume_data = results.get('resume', {})
+        # Update Resume JSON pane
+        self.resume_json_text.delete("1.0", tk.END)
+        formatted_resume_json = json.dumps({'skills': resume_data.get('skills', []), 'certifications': resume_data.get('certifications', [])}, indent=2, ensure_ascii=False)
+        self.resume_json_text.insert(tk.END, formatted_resume_json)
+        # Update JD JSON pane
+        self.jd_json_text.delete("1.0", tk.END)
+        formatted_jd_json = json.dumps({'skills': jd_meta.get('skills', []), 'certifications': jd_meta.get('certifications', []), 'isCertMandatory': jd_meta.get('isCertMandatory', 'Optional')}, indent=2, ensure_ascii=False)
+        self.jd_json_text.insert(tk.END, formatted_jd_json)
         # Update summary tab
         self.update_summary_tab(results)
-        
-        # Update status
-        successful = sum(1 for r in results.values() if "error" not in r)
-        self.status_label.config(text=f"✅ Extraction completed: {successful}/{len(results)} successful")
+        self.status_label.config(text="✅ Extraction completed")
         self.progress['value'] = self.progress['maximum']
-        
-        # Re-enable buttons
         self.set_buttons_state('normal')
-        
-        logger.info(f"Extraction completed for {len(results)} files")
+        logger.info("Extraction completed for 1 resume")
 
     def update_summary_tab(self, results):
         """Generate and display summary statistics"""
