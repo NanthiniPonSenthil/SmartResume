@@ -394,6 +394,106 @@ class EnhancedResumeExtractor:
 
         return 'Optional'
 
+    def extract_jd_experience_requirement(self, text: str) -> Tuple[Optional[float], str]:
+        """Extract a required years-of-experience value from the JD text and whether it's mandatory.
+
+        Returns (years_required or None, 'yes'|'Optional').
+        """
+        if not text:
+            return None, 'Optional'
+
+        text_l = text.lower()
+
+        # Try to capture an explicit 'Required Experience (years):' line first
+        years = None
+        m_exp_line = re.search(r'required\s+experience\s*\(years\)\s*:\s*([^\n\r]+)', text_l)
+        exp_str = None
+        if m_exp_line:
+            exp_str = m_exp_line.group(1).strip()
+
+        # If no explicit line, try to find common patterns nearby
+        if not exp_str:
+            # look for a short snippet after an 'experience' header
+            m_snip = re.search(r'(experience[:\n\r].{0,120})', text_l)
+            if m_snip:
+                snip = m_snip.group(1)
+                m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*[-–—]\s*(\d{1,2}(?:\.\d+)?)', snip)
+                if m_range:
+                    exp_str = m_range.group(0)
+                else:
+                    m_num = re.search(r'(?:at least|min(?:imum)?|minimum|>=|>)?\s*(\d{1,2}(?:\.\d+)?)(?:\+)?\s*(?:years|yrs?)', snip)
+                    if m_num:
+                        exp_str = m_num.group(0)
+
+        # Fallback: scan whole text for ranges or inequalities
+        if not exp_str:
+            m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*[-–—]\s*(\d{1,2}(?:\.\d+)?)\s*(?:years|yrs?)', text_l)
+            if m_range:
+                years = {'min': float(m_range.group(1)), 'max': float(m_range.group(2))}
+            else:
+                m_less = re.search(r'(?:less than|under|up to|<=)\s*(\d{1,2}(?:\.\d+)?)\s*(?:years|yrs?)', text_l)
+                if m_less:
+                    years = {'max': float(m_less.group(1))}
+                else:
+                    m_more = re.search(r'(?:at least|minimum|min(?:imum)?|>=|>)\s*(\d{1,2}(?:\.\d+)?)\s*(?:years|yrs?)', text_l)
+                    if m_more:
+                        years = {'min': float(m_more.group(1))}
+                    else:
+                        m_exact = re.search(r'(?<!\d)(\d{1,2}(?:\.\d+)?)\s*(?:years|yrs?)', text_l)
+                        if m_exact:
+                            years = {'exact': float(m_exact.group(1))}
+                        else:
+                            years = None
+        else:
+            s = exp_str
+            m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*[-–—]\s*(\d{1,2}(?:\.\d+)?)', s)
+            if m_range:
+                years = {'min': float(m_range.group(1)), 'max': float(m_range.group(2))}
+            else:
+                m_less = re.search(r'less than\s*(\d{1,2}(?:\.\d+)?)', s)
+                if m_less:
+                    years = {'max': float(m_less.group(1))}
+                else:
+                    m_more = re.search(r'(?:at least|minimum|min(?:imum)?|>=|>)\s*(\d{1,2}(?:\.\d+)?)', s)
+                    if m_more:
+                        years = {'min': float(m_more.group(1))}
+                    else:
+                        m_num = re.search(r'(\d{1,2}(?:\.\d+)?)', s)
+                        if m_num:
+                            years = {'exact': float(m_num.group(1))}
+                        else:
+                            years = None
+
+        # Detect explicit 'Is Experience Mandatory: Yes' style flag
+        is_mand = 'Optional'
+        m_flag = re.search(r'is\s*experience\s*mandatory\s*:\s*(yes|y|true|required|mandatory|no|optional|false)', text_l)
+        if m_flag:
+            val = m_flag.group(1).strip()
+            if val in ('yes', 'y', 'true', 'required', 'mandatory'):
+                is_mand = 'yes'
+            else:
+                is_mand = 'Optional'
+        else:
+            # if words like 'must have' or 'required' appear near 'experience', treat as mandatory
+            if re.search(r'(must have|required(?: to)?|minimum|min(?:imum)?|must)\s+\d', text_l):
+                is_mand = 'yes'
+
+        # Interpret 'must have N years' (without 'at least'/'minimum') as an exact requirement
+        # so that resumes with > N years will fail when experience is mandatory.
+        # If phrase contains 'at least' or 'minimum', keep as min.
+        m_must = re.search(r"(?:(?:must have|must)\s*)(\d{1,2}(?:\.\d+)?)\s*(?:years|yrs?)", text_l)
+        if m_must:
+            # ensure not 'at least' style
+            if not re.search(r'(at least|minimum|min(?:imum)?)\s*' + re.escape(m_must.group(1)), text_l):
+                # set years to an exact value if not already a dict with min/max
+                try:
+                    val = float(m_must.group(1))
+                    years = {'exact': val}
+                except Exception:
+                    pass
+
+        return years, is_mand
+
     def _extract_languages(self, text: str) -> List[str]:
         """Extract spoken languages"""
         found_langs = []
@@ -707,92 +807,144 @@ class EnhancedResumeUI:
             self.status_label.config(text="✅ 1 resume selected")
             messagebox.showinfo("File Selected", "Selected 1 resume file for processing.")
             logger.info(f"Uploaded 1 resume file: {file}")
-    def build_minimal_skills_db(skills_list):
-        db = {}
-        for i, s in enumerate(skills_list):
-            key = f"KS_{i}_{s.replace(' ', '_')}"
-            db[key] = {
-                'skill_len': len(s.split()),
-                'high_surfce_forms': {'full': s, 'abv': s},
-                'low_surface_forms': [],
-                'match_on_tokens': False,
-                'skill_type': 'TECH'
-            }
-        return db
-
     def filter_results(self):
+        """Compare stored resume vs JD and call LLM (or short-circuit on mandatory failures).
+
+        Uses previously-extracted values in self.results. Short-circuits and writes
+        a deterministic low-score when a mandatory certification or mandatory
+        experience requirement is not met, otherwise asks the LLM for a score.
+        """
         results = self.results or {}
         jd_meta = results.get('_job_description', {})
         jd_skills = jd_meta.get('skills', [])
         jd_certs = jd_meta.get('certifications', [])
         jd_is_mandatory = jd_meta.get('isCertMandatory', 'Optional')
-        resume = results.get('resume', {})
+        jd_required_years = jd_meta.get('required_experience_years', None)
+        jd_experience_mandatory = jd_meta.get('isExperienceMandatory', 'Optional')
+
+        resume = results.get('resume', {}) or {}
+
+        # Deduplicate resume skills/certs case-insensitively while preserving order
         deduped_resume_skills = []
+        seen_skills = set()
         for s in resume.get('skills', []) or []:
             ss = str(s).strip()
-            if ss and ss.lower() not in {x.lower() for x in deduped_resume_skills}:
+            key = ss.lower()
+            if ss and key not in seen_skills:
+                seen_skills.add(key)
                 deduped_resume_skills.append(ss)
+
         resume_certs = []
+        seen_certs = set()
         for c in resume.get('certifications', []) or []:
             cc = str(c).strip()
-            if cc and cc.lower() not in {x.lower() for x in resume_certs}:
+            key = cc.lower()
+            if cc and key not in seen_certs:
+                seen_certs.add(key)
                 resume_certs.append(cc)
 
+        # include resume overall years
+        resume_years = resume.get('overall_experience_years', None)
+        # mirror naming: expose JD years in a variable named like resume_years
+        jd_years = jd_required_years
+
+        # Deterministic experience enforcement: if JD marks experience as mandatory
+        # and the resume's years don't satisfy the JD requirement, short-circuit
+        # with an Insufficient Experience result (no LLM call).
+        if jd_experience_mandatory == 'yes' and jd_required_years and resume_years is not None:
+            req = jd_required_years
+            insufficient = False
+            try:
+                ry = float(resume_years)
+            except Exception:
+                ry = None
+
+            if ry is not None:
+                if isinstance(req, dict):
+                    # exact requirement
+                    if 'exact' in req:
+                        if ry != float(req['exact']):
+                            insufficient = True
+                    else:
+                        if 'min' in req and ry < float(req['min']):
+                            insufficient = True
+                        if 'max' in req and ry > float(req['max']):
+                            insufficient = True
+                else:
+                    # numeric scalar: treat as minimum
+                    try:
+                        if ry < float(req):
+                            insufficient = True
+                    except Exception:
+                        pass
+
+            if insufficient:
+                out = {'match_percentage': 10, 'reason': 'Insufficient Experience'}
+                pretty = json.dumps(out, indent=2, ensure_ascii=False)
+                if hasattr(self, 'summary_text'):
+                    self.summary_text.delete('1.0', tk.END)
+                    self.summary_text.insert(tk.END, pretty)
+                return
+
+        # Configure API key (original hard-coded string kept for compatibility)
         try:
             genai.configure(api_key="xyz")
         except Exception:
             pass
         model = genai.GenerativeModel("gemini-pro-latest")
 
-        # --- Prompt ---
-        prompt = f"""You are a recruiter. Compare the candidate's skills and certifications to the job description. There may be extra unnecessary information in both the resume and job description. Focus only on skills and certifications.
+        # Build succinct prompt including experience fields
+        prompt = f"""
+                You are a recruiter. Compare the candidate’s resume to the job description,
+                focusing ONLY on skills, certifications, and years of experience.
 
-        Resume Skills: {deduped_resume_skills}
-        Resume Certifications: {resume_certs}
-        Job Description Skills: {jd_skills}
-        Job Description Certifications: {jd_certs}
-        Is Certification Mandatory: {jd_is_mandatory}
+                Resume:
+                - Skills: {deduped_resume_skills}
+                - Certifications: {resume_certs}
+                - Total Experience (years): {resume_years}
 
-        Scoring rules (apply these strictly):
-        1. If JD specifies a certification as mandatory ('yes') and that certification is missing from Resume Certifications, return a LOW match_percentage (0-30) and set reason to exactly: "Missing Certification". Do not include skills in the reason in this case.
-        2. Otherwise, compute an overall matching percentage (0-100) prioritizing skill overlap. Additionally, award a meaningful boost to the percentage if JD certifications (mandatory or optional) are present in the resume.
-           - Treat semantically similar terms as matches (e.g., "AWS" ~ "Amazon Web Services", "React" ~ "ReactJS").
-        3. If percentage > 75, reason = "Matching: <list 2-3 key matched JD skills>".
-        4. If percentage < 40 and not a missing certification case, reason = "Missing: <list 2-3 key missing JD skills>".
-        5. Otherwise, reason = "Partial Match: <list 2-3 matched/missing skills>".
-        6. Output only valid JSON with keys: match_percentage (number), reason (string). No extra text.
-        7. Use semantic reasoning — do not rely solely on literal string equality.
-        """
+                Job Description:
+                - Skills: {jd_skills}
+                - Certifications: {jd_certs}
+                - Is Certification Mandatory: {jd_is_mandatory}
+                - Required Experience (years): {jd_required_years}
+                - Is Experience Mandatory: {jd_experience_mandatory}
+
+                Scoring Rules (follow strictly):
+                1. If a mandatory certification is missing → return {{ "match_percentage": 0–30, "reason": "Missing Certification" }}.
+                2. If required experience is not met → return {{ "match_percentage": 0–30, "reason": "Insufficient Experience" }}.
+                3. Otherwise, score 0–100 based on skill overlap (boost for certification matches).
+                4. If score > 75 → reason = "Matching: <2-3 skills>"
+                If score < 40 → reason = "Missing: <2-3 skills>"
+
+                Return ONLY valid JSON:
+                {{ "match_percentage": number, "reason": string }}
+                """
 
         try:
-            # Call generate_content using the SDK's supported signature (prompt only).
             response = model.generate_content(prompt)
 
-            # --- Extract response text robustly ---
-            response_text = getattr(response, "text", None)
-
-            if not response_text and hasattr(response, "output"):
+            response_text = getattr(response, 'text', None)
+            if not response_text and hasattr(response, 'output'):
                 response_text = str(response.output)
-            elif not response_text and hasattr(response, "candidates"):
-                response_text = "\n".join(getattr(c, "text", str(c)) for c in response.candidates)
-
+            elif not response_text and hasattr(response, 'candidates'):
+                response_text = '\n'.join(getattr(c, 'text', str(c)) for c in response.candidates)
             if not response_text:
                 response_text = str(response)
 
-            # --- Parse as JSON if possible ---
             try:
                 parsed = json.loads(response_text)
                 pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
             except Exception:
                 pretty = response_text
 
-            if hasattr(self, "summary_text"):
-                self.summary_text.delete("1.0", tk.END)
+            if hasattr(self, 'summary_text'):
+                self.summary_text.delete('1.0', tk.END)
                 self.summary_text.insert(tk.END, pretty)
 
         except Exception as e:
-            logger.error(f"LLM call failed: {e}")
-            messagebox.showerror("Filter Error", f"Failed to compute match using LLM: {e}")
+            logger.error(f'LLM call failed: {e}')
+            messagebox.showerror('Filter Error', f'Failed to compute match using LLM: {e}')
     def run_extraction(self):
         """Run the extraction process with progress tracking"""
         if not self.resumes:
@@ -812,12 +964,15 @@ class EnhancedResumeUI:
                 results = {}
                 jd_text = self.jd_text.get("1.0", tk.END).strip()
                 jd_skills, jd_certs = self.extractor.extract_skills_and_certs(jd_text) if jd_text else ([], [])
+                jd_years_required, jd_is_experience_mandatory = self.extractor.extract_jd_experience_requirement(jd_text)
                 jd_cert_mandatory = self.extractor._jd_cert_mandatory(jd_text, jd_certs)
                 results['_job_description'] = {
                     'text': jd_text,
                     'skills': jd_skills,
                     'certifications': jd_certs,
-                    'isCertMandatory': jd_cert_mandatory
+                    'isCertMandatory': jd_cert_mandatory,
+                    'required_experience_years': jd_years_required,
+                    'isExperienceMandatory': jd_is_experience_mandatory
                 }
                 # Process only first resume if present
                 if self.resumes:
