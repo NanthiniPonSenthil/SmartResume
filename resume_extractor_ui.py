@@ -898,7 +898,7 @@ class EnhancedResumeUI:
 
         # Configure API key (original hard-coded string kept for compatibility)
         try:
-            genai.configure(api_key="AIzaSyBiwoGW2oc3rhjcN-NTlEGWqoowRCs-dGQ")
+            genai.configure(api_key="xyz")
         except Exception:
             pass
         model = genai.GenerativeModel("gemini-pro-latest")
