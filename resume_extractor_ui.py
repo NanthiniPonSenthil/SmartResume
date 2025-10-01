@@ -14,7 +14,6 @@ from spacy.matcher import PhraseMatcher
 from skillNer.skill_extractor_class import SkillExtractor
 from skillNer.general_params import SKILL_DB
 
-from Test_SkillNER import build_minimal_skills_db
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -240,16 +239,27 @@ class EnhancedResumeExtractor:
                 
                 doc = NLP(text)
                 exceptions = [".NET", ".net", ".Net"]
+                # skills_out = [
+                #     token.text for token in doc
+                #     if token.text in exceptions                          # keep only exceptions
+                #     or (
+                #         not token.is_stop                                # remove stop words like 'is', 'a', 'the'
+                #         and token.is_alpha                                # keep only alphabetic words
+                #         and token.pos_ != "PRON"                          # remove pronouns like 'he', 'she'
+                #         and token.ent_type_ not in ["PERSON"]            # remove names
+                #     )
+                # ]
                 skills_out = [
-                    token.text for token in doc
-                    if token.text in exceptions                          # keep only exceptions
-                    or (
-                        not token.is_stop                                # remove stop words like 'is', 'a', 'the'
-                        and token.is_alpha                                # keep only alphabetic words
-                        and token.pos_ != "PRON"                          # remove pronouns like 'he', 'she'
-                        and token.ent_type_ not in ["PERSON"]            # remove names
-                    )
-                ]
+                        token.text for token in doc
+                        if token.text in exceptions  # keep exact matches from your predefined skill list
+                        or (
+                            not token.is_stop
+                            and not token.like_num
+                            and token.pos_ != "PRON"
+                            and token.ent_type_ not in ["PERSON", "ORG", "GPE","LOC","DATE"]  # filter out names/places/orgs
+                            and any(char.isalpha() for char in token.text)       # must have at least one letter
+                        )
+                    ]
 
                 # Clean and title-case
                 normalized = []
@@ -353,13 +363,13 @@ class EnhancedResumeExtractor:
                 if not c:
                     continue
                 for tok in re.findall(r"[A-Za-z0-9]+", c.lower()):
-                    if len(tok) >= 2:
+                    if len(tok) >= 3:  # ignore very short tokens to reduce false positives
                         cert_tokens.add(tok)
 
         # include core tokens from certification_keywords to catch misspellings or alternate phrasing
         for cert_kw in self.certification_keywords:
             for tok in re.findall(r"[A-Za-z0-9]+", cert_kw.lower()):
-                if len(tok) >= 2:
+                if len(tok) >= 3:
                     cert_tokens.add(tok)
 
         # Also include short canonical tokens for cloud providers and common certs
@@ -378,9 +388,9 @@ class EnhancedResumeExtractor:
             if 'certif' in s or 'certificate' in s or 'certified' in s or 'cerification' in s:
                 has_cert_mention = True
 
-            # check for known cert tokens in the sentence
+            # check for known cert tokens in the sentence using word boundaries
             for tok in cert_tokens:
-                if tok in s:
+                if re.search(rf"\b{re.escape(tok)}\b", s):
                     has_cert_mention = True
                     break
 
@@ -888,7 +898,7 @@ class EnhancedResumeUI:
 
         # Configure API key (original hard-coded string kept for compatibility)
         try:
-            genai.configure(api_key="xyz")
+            genai.configure(api_key="AIzaSyBiwoGW2oc3rhjcN-NTlEGWqoowRCs-dGQ")
         except Exception:
             pass
         model = genai.GenerativeModel("gemini-pro-latest")
@@ -914,8 +924,8 @@ class EnhancedResumeUI:
                 1. If a mandatory certification is missing → return {{ "match_percentage": 0–30, "reason": "Missing Certification" }}.
                 2. If required experience is not met → return {{ "match_percentage": 0–30, "reason": "Insufficient Experience" }}.
                 3. Otherwise, score 0–100 based on skill overlap (boost for certification matches).
-                4. If score > 75 → reason = "Matching: <2-3 skills>"
-                If score < 40 → reason = "Missing: <2-3 skills>"
+                4. If score > 75 → reason = "Matching: <Mention matching skills and certifications if any>"
+                If score < 40 → reason = "Missing: <Mention all missing skills>"
 
                 Return ONLY valid JSON:
                 {{ "match_percentage": number, "reason": string }}
