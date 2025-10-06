@@ -231,33 +231,22 @@ class EnhancedResumeExtractor:
 
         Returns a deduplicated, title-cased list limited to 15 items.
         """
-        # Use SkillNER if available
+        # Use SkillNER if available — collect its output but don't return immediately.
+        skillner_skills = []
         if getattr(self, 'skillner', None) is not None:
             try:
-                skills_out = []            
-
-                
+                skills_out = []
                 doc = NLP(text)
                 exceptions = [".NET", ".net", ".Net"]
-                # skills_out = [
-                #     token.text for token in doc
-                #     if token.text in exceptions                          # keep only exceptions
-                #     or (
-                #         not token.is_stop                                # remove stop words like 'is', 'a', 'the'
-                #         and token.is_alpha                                # keep only alphabetic words
-                #         and token.pos_ != "PRON"                          # remove pronouns like 'he', 'she'
-                #         and token.ent_type_ not in ["PERSON"]            # remove names
-                #     )
-                # ]
                 skills_out = [
                         token.text for token in doc
-                        if token.text in exceptions  # keep exact matches from your predefined skill list
+                        if token.text in exceptions
                         or (
                             not token.is_stop
                             and not token.like_num
                             and token.pos_ != "PRON"
-                            and token.ent_type_ not in ["PERSON", "ORG", "GPE","LOC","DATE"]  # filter out names/places/orgs
-                            and any(char.isalpha() for char in token.text)       # must have at least one letter
+                            and token.ent_type_ not in ["PERSON", "ORG", "GPE", "LOC", "DATE"]
+                            and any(char.isalpha() for char in token.text)
                         )
                     ]
 
@@ -280,7 +269,7 @@ class EnhancedResumeExtractor:
                         seen.add(k)
                         unique.append(s)
 
-                return unique
+                skillner_skills = unique
             except Exception as e:
                 logger.warning(f"SkillNER extraction failed ({e}); falling back to keyword extraction")
 
@@ -292,6 +281,15 @@ class EnhancedResumeExtractor:
             if re.search(rf'\b{re.escape(skill.lower())}\b', text_lower):
                 found_skills.append(skill.title())
 
+        # Merge SkillNER results with keyword-based found skills (keyword results are reliable for clear tokens)
+        merged = []
+        seen_final = set()
+        for s in (skillner_skills + found_skills):
+            key = s.lower()
+            if key not in seen_final:
+                seen_final.add(key)
+                merged.append(s)
+
         # Look for skills section
         skills_match = re.search(r'(skills?|competencies|expertise)([\s\S]{0,300})', text, re.IGNORECASE)
         if skills_match:
@@ -299,15 +297,27 @@ class EnhancedResumeExtractor:
             additional_skills = re.findall(r'[•\-\*]?\s*([A-Za-z][A-Za-z\s&/\-]{2,20})', skills_section)
             found_skills.extend([skill.strip().title() for skill in additional_skills if skill.strip()])
 
-        # Remove duplicates while preserving order
+        # Remove duplicates while preserving order for the found_skills (from keyword/section extraction)
         seen = set()
         unique_skills = []
         for skill in found_skills:
-            if skill.lower() not in seen:
+            if skill and skill.lower() not in seen:
                 seen.add(skill.lower())
                 unique_skills.append(skill)
 
-        return unique_skills
+        # Combine SkillNER results with the cleaned unique keyword/section results
+        final = []
+        seen_final = set()
+        for s in (skillner_skills + unique_skills):
+            if not s:
+                continue
+            key = s.lower()
+            if key not in seen_final:
+                seen_final.add(key)
+                # normalize title-casing for display
+                final.append(s.title())
+
+        return final
 
     
 
@@ -340,6 +350,204 @@ class EnhancedResumeExtractor:
         skills = self._extract_skills(text) if text else []
         certs = self._extract_certifications(text) if text else []
         return skills, certs
+
+    def extract_jd_sections(self, text: str) -> Tuple[List[str], List[str]]:
+        """Extract 'Must-Have' and 'Good To Have' sections from a JD text.
+
+        Returns (must_have_list, good_to_have_list). Items are normalized strings.
+        Handles headings like 'Must-Have', 'Must Have', 'Good To Have', 'Nice to have',
+        and captures bullets, comma-separated lists, and inline sentences.
+        """
+        must = []
+        good = []
+        if not text:
+            return must, good
+
+        # Normalize line endings and split
+        lines = [l.rstrip() for l in text.splitlines()]
+
+        current = None
+        # common heading starts
+        must_heads = re.compile(r'^(must[\s\-]*have[s]?|must[:\-]?$|must\s*\:)', re.IGNORECASE)
+        good_heads = re.compile(r'^(good[\s\-]*to[\s\-]*have|nice\s+to\s+have|preferred|desired|good[:\-]?)', re.IGNORECASE)
+        # headings that should terminate a must/good section when encountered.
+        # Only match explicit section headers (e.g. 'Experience' or 'Experience:') so
+        # sentences that start with the word 'Experience' (like 'Experience working in...')
+        # are NOT treated as new section starters.
+        other_section_starts = re.compile(
+            r'^(?:experience\s*:?$|responsibilities\b|responsibilities:\b|qualifications\b|education\b|benefits\b|about\s+the\s+role\b|role\s+responsibilities\b|required\s+experience\b|required\s+experience\s*\(years\)|required:)',
+            re.IGNORECASE,
+        )
+
+        # We'll collect raw lines for must/good sections and reuse _extract_skills
+        def collect_section_text(line: str) -> Optional[str]:
+            # remove leading bullet markers and excessive punctuation
+            l = re.sub(r'^[\-•\*\s]+', '', line).strip()
+            if not l:
+                return None
+
+            # Remove common leading boilerplate that describes expectations
+            l = re.sub(r'^(?:candidate should have knowledge of|candidate should have|candidate should have experience in|hands on exp in|hands on experience in|experience in working in|experience working in|experience working on|experience in|experience with|knowledge of|must have|should have|must be able to|must have experience in)\s+', '', l, flags=re.IGNORECASE)
+
+            # Remove trailing noise phrases like 'also expected' or stray words
+            l = re.sub(r'\b(?:also expected(?: to be)?|also required|also expected to have|expected(?: to be)?|and expected)\b\.?', '', l, flags=re.IGNORECASE).strip()
+
+            # remove leftover trailing punctuation
+            l = l.strip().strip(':;.')
+
+            # If the remaining text is very short and looks like a heading token, skip
+            if re.match(r'^(must|good|preferred|desired|nice to have)$', l.strip().lower()):
+                return None
+
+            return l
+
+        for ln in lines:
+            s = ln.strip()
+            if not s:
+                # ignore blank lines but keep current section active so
+                # content following an empty line is still captured under the heading
+                continue
+
+            low = s.lower()
+            # If a heading line
+            if must_heads.search(low):
+                # capture any inline items after ':' on same line as raw text
+                after = re.split(r':', s, maxsplit=1)
+                if len(after) > 1 and after[1].strip():
+                    t = collect_section_text(after[1])
+                    if t:
+                        must.append(t)
+                current = 'must'
+                continue
+            if good_heads.search(low):
+                after = re.split(r':', s, maxsplit=1)
+                if len(after) > 1 and after[1].strip():
+                    t = collect_section_text(after[1])
+                    if t:
+                        good.append(t)
+                current = 'good'
+                continue
+
+            # If the current line looks like another major section, stop capturing must/good
+            if other_section_starts.search(s):
+                current = None
+                continue
+
+            # If we are within a section, accumulate raw lines
+            if current == 'must':
+                t = collect_section_text(s)
+                if t:
+                    must.append(t)
+                continue
+            if current == 'good':
+                t = collect_section_text(s)
+                if t:
+                    good.append(t)
+                continue
+
+        # Fallback: if no explicit headings, try to detect common phrasing lines and collect raw sentences
+        if not must and not good:
+            for sent in re.split(r'[\.\n;]+', text):
+                s = sent.strip()
+                if not s:
+                    continue
+                low = s.lower()
+                if low.startswith('must') or low.startswith('should have') or 'must have' in low:
+                    must.append(s)
+                elif low.startswith('good to have') or low.startswith('nice to have') or low.startswith('preferred'):
+                    good.append(s)
+
+        # Use the existing _extract_skills logic on the concatenated section texts
+        def normalize_section(raw_lines: List[str]) -> List[str]:
+            if not raw_lines:
+                return []
+            joined = '\n'.join(raw_lines)
+            # reuse the extractor's skill extraction (no hardcoding here)
+            skills = self._extract_skills(joined)
+
+            # Build allowed set from configured keyword lists to filter out junk tokens
+            allowed = set(k.lower() for k in self.skill_keywords)
+            # tech keywords is a dict mapping skill->category
+            allowed.update(k.lower() for k in self.tech_keywords.keys())
+
+            seen = set()
+            out = []
+            for s in skills:
+                k = s.lower()
+                # Keep skills that appear in our known lists (tech or skill keywords)
+                if k in allowed:
+                    if k not in seen:
+                        seen.add(k)
+                        out.append(s)
+                else:
+                    # Also allow some multi-word patterns or common extensions (e.g., '.net core', 'react')
+                    # Keep items that contain letters and a minimum length and are not obviously junk
+                    if re.search(r'[a-zA-Z]', s) and len(k) >= 3 and k not in {'candidate', 'knowledge', 'expected', 'hands', 'exp', 'working', 'good', 'tools'}:
+                        if k not in seen:
+                            seen.add(k)
+                            out.append(s)
+
+            return out
+
+        return normalize_section(must), normalize_section(good)
+
+    def _tokenize_skill(self, text: str) -> List[str]:
+        """Normalize and tokenize a skill or phrase into meaningful tokens.
+
+        Removes punctuation, common noise words, and returns lowercased tokens.
+        """
+        if not text:
+            return []
+        # lower, remove punctuation except plus signs (e.g., c++)
+        s = text.lower()
+        # replace common separators with spaces
+        s = re.sub(r'[\./\\]+', ' ', s)
+        # remove parentheses and colons
+        s = re.sub(r'[\(\):,;]', ' ', s)
+        # collapse non-alphanum to spaces (keep + for c++)
+        s = re.sub(r'[^a-z0-9\+\s]', ' ', s)
+        tokens = [t for t in re.split(r'\s+', s) if t]
+        # noise words to ignore
+        noise = {'also', 'expected', 'experience', 'experiencein', 'experiencein', 'working', 'methodology', 'hands', 'on', 'exp', 'candidate', 'should', 'have', 'knowledge', 'of', 'in', 'front', 'end', 'front-end', 'front_end', 'frontend', 'js'}
+        # map some aliases
+        alias_map = {'reactjs': 'react', 'react.js': 'react', 'netcore': 'net core', 'dotnetcore': 'net core', '.net': 'net', 'csharp': 'c#'}
+        out = []
+        for t in tokens:
+            tt = t.strip()
+            if not tt:
+                continue
+            if tt in noise:
+                continue
+            # apply alias mapping
+            if tt in alias_map:
+                mapped = alias_map[tt]
+                for sub in mapped.split():
+                    if sub and sub not in out:
+                        out.append(sub)
+                continue
+            # keep tokens length >=2 or common ones like c++
+            if len(tt) >= 2 or '++' in tt or '+' in tt:
+                if tt not in out:
+                    out.append(tt)
+        return out
+
+    def _jd_item_matches_resume(self, jd_item: str, resume_skills: List[str]) -> bool:
+        """Return True if any token from jd_item appears in any resume skill tokens."""
+        jd_tokens = set(self._tokenize_skill(jd_item))
+        if not jd_tokens:
+            return False
+        # check against each resume skill token set
+        for rs in resume_skills:
+            rs_tokens = set(self._tokenize_skill(rs))
+            if not rs_tokens:
+                continue
+            # if any jd token intersects resume tokens, treat as match
+            if jd_tokens & rs_tokens:
+                return True
+            # also check if resume tokens include all jd tokens (strong match)
+            if jd_tokens.issubset(rs_tokens):
+                return True
+        return False
 
     def _jd_cert_mandatory(self, text: str, certs: List[str]) -> str:
         """Determine if any certification mentioned in the JD is explicitly mandatory.
@@ -487,6 +695,11 @@ class EnhancedResumeExtractor:
             # if words like 'must have' or 'required' appear near 'experience', treat as mandatory
             if re.search(r'(must have|required(?: to)?|minimum|min(?:imum)?|must)\s+\d', text_l):
                 is_mand = 'yes'
+
+        # If a closed range was detected and no explicit mandatory flag was present,
+        # treat ranges like 3-5 or 4-5.5 as mandatory by default (user expectation).
+        if is_mand == 'Optional' and isinstance(years, dict) and 'min' in years and 'max' in years:
+            is_mand = 'yes'
 
         # Interpret 'must have N years' (without 'at least'/'minimum') as an exact requirement
         # so that resumes with > N years will fail when experience is mandatory.
@@ -858,6 +1071,15 @@ class EnhancedResumeUI:
         # mirror naming: expose JD years in a variable named like resume_years
         jd_years = jd_required_years
 
+        # Enforce missing MUST-HAVE skills: if JD lists must_have items and any are
+        # not found in the resume skills (case-insensitive), short-circuit with low match.
+        jd_must_have = jd_meta.get('must_have', []) or []
+        jd_good_to_have = jd_meta.get('good_to_have', []) or []
+
+        # Do not deterministically short-circuit on missing must-haves here.
+        # We will send the JD must-have list to the LLM and let it decide which are missing
+        # and what match percentage to return.
+
         # Deterministic experience enforcement: if JD marks experience as mandatory
         # and the resume's years don't satisfy the JD requirement, short-circuit
         # with an Insufficient Experience result (no LLM call).
@@ -870,20 +1092,33 @@ class EnhancedResumeUI:
                 ry = None
 
             if ry is not None:
+                # Apply a tolerance of +/- 0.5 years around requirements
+                tol = 0.5
                 if isinstance(req, dict):
-                    # exact requirement
+                    # exact requirement => allow within +/- tol
                     if 'exact' in req:
-                        if ry != float(req['exact']):
+                        val = float(req['exact'])
+                        if not (val - tol <= ry <= val + tol):
                             insufficient = True
                     else:
-                        if 'min' in req and ry < float(req['min']):
-                            insufficient = True
-                        if 'max' in req and ry > float(req['max']):
-                            insufficient = True
+                        # closed range -> allow expanded range by tol on both sides
+                        if 'min' in req and 'max' in req:
+                            minv = float(req['min']) - tol
+                            maxv = float(req['max']) + tol
+                            if ry < minv or ry > maxv:
+                                insufficient = True
+                        else:
+                            if 'min' in req:
+                                if ry < float(req['min']) - tol:
+                                    insufficient = True
+                            if 'max' in req:
+                                if ry > float(req['max']) + tol:
+                                    insufficient = True
                 else:
-                    # numeric scalar: treat as minimum
+                    # numeric scalar: treat as exact with tolerance (not just minimum)
                     try:
-                        if ry < float(req):
+                        val = float(req)
+                        if not (val - tol <= ry <= val + tol):
                             insufficient = True
                     except Exception:
                         pass
@@ -903,7 +1138,7 @@ class EnhancedResumeUI:
             pass
         model = genai.GenerativeModel("gemini-pro-latest")
 
-        # Build succinct prompt including experience fields
+        # Build succinct prompt including experience fields and MUST-HAVE context
         prompt = f"""
                 You are a recruiter. Compare the candidate’s resume to the job description,
                 focusing ONLY on skills, certifications, and years of experience.
@@ -920,15 +1155,30 @@ class EnhancedResumeUI:
                 - Required Experience (years): {jd_required_years}
                 - Is Experience Mandatory: {jd_experience_mandatory}
 
-                Scoring Rules (follow strictly):
-                1. If a mandatory certification is missing → return {{ "match_percentage": 0–30, "reason": "Missing Certification" }}.
-                2. If required experience is not met → return {{ "match_percentage": 0–30, "reason": "Insufficient Experience" }}.
-                3. Otherwise, score 0–100 based on skill overlap (boost for certification matches).
-                4. If score > 75 → reason = "Matching: <Mention matching skills and certifications if any>"
-                If score < 40 → reason = "Missing: <Mention all missing skills>"
+                CRITICAL: These are MANDATORY must-have skills: {jd_must_have}
 
-                Return ONLY valid JSON:
-                {{ "match_percentage": number, "reason": string }}
+                IMPORTANT NOTES:
+                - Skills lists may contain noise, descriptive text, and extra words
+                - Focus on extracting core technology/skill names from the text
+                - Must-have skills may include phrases like "Front-end React js" (extract: React), ".Net Core and MVC" (extract: .NET Core, MVC)
+                - Resume skills may also contain descriptive text - extract the core technologies
+                - Match skills intelligently based on technology names, not exact string matches
+                - Consider skill variations (React = React.js = ReactJS, .NET = DotNet = Net Core, etc.)
+
+                STRICT ENFORCEMENT RULES:
+                1. Extract core technology names from both resume skills and must-have lists
+                2. IF ANY technology from must-have list is missing from resume, IMMEDIATELY return 15-25%
+                3. Use intelligent matching - don't require exact string matches
+                4. Examples: "Front-end React js" contains React, "agile methodology" contains Agile
+                5. If ALL must-have technologies are found in resume, evaluate normally
+                6. If mandatory certification missing, return percentage 10-30%
+                7. If experience doesn't match requirements, return percentage 10-30%
+
+                REASON FORMAT:
+                - If missing must-haves: "Poor match. Missing mandatory skills: [list missing items]. Found: [list found items]"
+                - If good match: "Strong match. Key skills: [list 3-4 matching skills]"
+
+                Return ONLY valid JSON: {{"match_percentage": number, "reason": "detailed explanation", "missing_must_have": ["list"]}}
                 """
 
         try:
@@ -982,7 +1232,10 @@ class EnhancedResumeUI:
                     'certifications': jd_certs,
                     'isCertMandatory': jd_cert_mandatory,
                     'required_experience_years': jd_years_required,
-                    'isExperienceMandatory': jd_is_experience_mandatory
+                    'isExperienceMandatory': jd_is_experience_mandatory,
+                    # extract explicit must-have / good-to-have sections
+                    'must_have': self.extractor.extract_jd_sections(jd_text)[0],
+                    'good_to_have': self.extractor.extract_jd_sections(jd_text)[1]
                 }
                 # Process only first resume if present
                 if self.resumes:
@@ -1019,7 +1272,13 @@ class EnhancedResumeUI:
         self.resume_json_text.insert(tk.END, formatted_resume_json)
         # Update JD JSON pane
         self.jd_json_text.delete("1.0", tk.END)
-        formatted_jd_json = json.dumps({'skills': jd_meta.get('skills', []), 'certifications': jd_meta.get('certifications', []), 'isCertMandatory': jd_meta.get('isCertMandatory', 'Optional')}, indent=2, ensure_ascii=False)
+        formatted_jd_json = json.dumps({
+            'skills': jd_meta.get('skills', []),
+            'certifications': jd_meta.get('certifications', []),
+            'isCertMandatory': jd_meta.get('isCertMandatory', 'Optional'),
+            'must_have': jd_meta.get('must_have', []),
+            'good_to_have': jd_meta.get('good_to_have', [])
+        }, indent=2, ensure_ascii=False)
         self.jd_json_text.insert(tk.END, formatted_jd_json)
         # Update summary tab
         self.update_summary_tab(results)
