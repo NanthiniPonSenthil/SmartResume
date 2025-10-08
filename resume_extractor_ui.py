@@ -245,7 +245,7 @@ class EnhancedResumeExtractor:
                             not token.is_stop
                             and not token.like_num
                             and token.pos_ != "PRON"
-                            and token.ent_type_ not in ["PERSON", "ORG", "GPE", "LOC", "DATE"]
+                            and token.ent_type_ not in [ "DATE"]
                             and any(char.isalpha() for char in token.text)
                         )
                     ]
@@ -273,42 +273,42 @@ class EnhancedResumeExtractor:
             except Exception as e:
                 logger.warning(f"SkillNER extraction failed ({e}); falling back to keyword extraction")
 
-        # Fallback logic: original keyword + regex extraction
-        found_skills = []
-        text_lower = text.lower()
+        # # Fallback logic: original keyword + regex extraction
+        # found_skills = []
+        # text_lower = text.lower()
 
-        for skill in self.skill_keywords:
-            if re.search(rf'\b{re.escape(skill.lower())}\b', text_lower):
-                found_skills.append(skill.title())
+        # for skill in self.skill_keywords:
+        #     if re.search(rf'\b{re.escape(skill.lower())}\b', text_lower):
+        #         found_skills.append(skill.title())
 
-        # Merge SkillNER results with keyword-based found skills (keyword results are reliable for clear tokens)
-        merged = []
-        seen_final = set()
-        for s in (skillner_skills + found_skills):
-            key = s.lower()
-            if key not in seen_final:
-                seen_final.add(key)
-                merged.append(s)
+        # # Merge SkillNER results with keyword-based found skills (keyword results are reliable for clear tokens)
+        # merged = []
+        # seen_final = set()
+        # for s in (skillner_skills + found_skills):
+        #     key = s.lower()
+        #     if key not in seen_final:
+        #         seen_final.add(key)
+        #         merged.append(s)
 
-        # Look for skills section
-        skills_match = re.search(r'(skills?|competencies|expertise)([\s\S]{0,300})', text, re.IGNORECASE)
-        if skills_match:
-            skills_section = skills_match.group(2)
-            additional_skills = re.findall(r'[•\-\*]?\s*([A-Za-z][A-Za-z\s&/\-]{2,20})', skills_section)
-            found_skills.extend([skill.strip().title() for skill in additional_skills if skill.strip()])
+        # # Look for skills section
+        # skills_match = re.search(r'(skills?|competencies|expertise)([\s\S]{0,300})', text, re.IGNORECASE)
+        # if skills_match:
+        #     skills_section = skills_match.group(2)
+        #     additional_skills = re.findall(r'[•\-\*]?\s*([A-Za-z][A-Za-z\s&/\-]{2,20})', skills_section)
+        #     found_skills.extend([skill.strip().title() for skill in additional_skills if skill.strip()])
 
-        # Remove duplicates while preserving order for the found_skills (from keyword/section extraction)
-        seen = set()
-        unique_skills = []
-        for skill in found_skills:
-            if skill and skill.lower() not in seen:
-                seen.add(skill.lower())
-                unique_skills.append(skill)
+        # # Remove duplicates while preserving order for the found_skills (from keyword/section extraction)
+        # seen = set()
+        # unique_skills = []
+        # for skill in found_skills:
+        #     if skill and skill.lower() not in seen:
+        #         seen.add(skill.lower())
+        #         unique_skills.append(skill)
 
         # Combine SkillNER results with the cleaned unique keyword/section results
         final = []
         seen_final = set()
-        for s in (skillner_skills + unique_skills):
+        for s in (skillner_skills ):
             if not s:
                 continue
             key = s.lower()
@@ -506,6 +506,7 @@ class EnhancedResumeExtractor:
         s = re.sub(r'[\(\):,;]', ' ', s)
         # collapse non-alphanum to spaces (keep + for c++)
         s = re.sub(r'[^a-z0-9\+\s]', ' ', s)
+
         tokens = [t for t in re.split(r'\s+', s) if t]
         # noise words to ignore
         noise = {'also', 'expected', 'experience', 'experiencein', 'experiencein', 'working', 'methodology', 'hands', 'on', 'exp', 'candidate', 'should', 'have', 'knowledge', 'of', 'in', 'front', 'end', 'front-end', 'front_end', 'frontend', 'js'}
@@ -635,7 +636,8 @@ class EnhancedResumeExtractor:
             m_snip = re.search(r'(experience[:\n\r].{0,120})', text_l)
             if m_snip:
                 snip = m_snip.group(1)
-                m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*[-–—]\s*(\d{1,2}(?:\.\d+)?)', snip)
+                # accept ranges like '3-5', '3 – 5', or '3 to 5'
+                m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*(?:[-–—]|to)\s*(\d{1,2}(?:\.\d+)?)', snip, flags=re.IGNORECASE)
                 if m_range:
                     exp_str = m_range.group(0)
                 else:
@@ -645,7 +647,8 @@ class EnhancedResumeExtractor:
 
         # Fallback: scan whole text for ranges or inequalities
         if not exp_str:
-            m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*[-–—]\s*(\d{1,2}(?:\.\d+)?)\s*(?:years|yrs?)', text_l)
+            # look for ranges like '8-13 years' or '8 to 13 yrs'
+            m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*(?:[-–—]|to)\s*(\d{1,2}(?:\.\d+)?)\s*(?:years|yrs?)', text_l, flags=re.IGNORECASE)
             if m_range:
                 years = {'min': float(m_range.group(1)), 'max': float(m_range.group(2))}
             else:
@@ -664,7 +667,8 @@ class EnhancedResumeExtractor:
                             years = None
         else:
             s = exp_str
-            m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*[-–—]\s*(\d{1,2}(?:\.\d+)?)', s)
+            # accept 'min to max' or 'min-max' formats in the explicit exp_str
+            m_range = re.search(r'(\d{1,2}(?:\.\d+)?)\s*(?:[-–—]|to)\s*(\d{1,2}(?:\.\d+)?)', s, flags=re.IGNORECASE)
             if m_range:
                 years = {'min': float(m_range.group(1)), 'max': float(m_range.group(2))}
             else:
@@ -1164,6 +1168,7 @@ class EnhancedResumeUI:
                 - Resume skills may also contain descriptive text - extract the core technologies
                 - Match skills intelligently based on technology names, not exact string matches
                 - Consider skill variations (React = React.js = ReactJS, .NET = DotNet = Net Core, etc.)
+                - Reason should be in 5-6 words, concise and to the point
 
                 STRICT ENFORCEMENT RULES:
                 1. Extract core technology names from both resume skills and must-have lists
